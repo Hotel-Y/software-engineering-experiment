@@ -1,14 +1,15 @@
-﻿# Instructor Demo - Sprint-02 - Member C
+﻿# Instructor Demo - Sprint-03 - Member A
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
 ## Sprint goal
 
-Basic recursive backup
+Manifest, restore, and verification
 
 ## Files supplied by this member
 
-- test.ps1
+- include/Manifest.h
+- src/Manifest.cpp
 
 ## Application sequence
 

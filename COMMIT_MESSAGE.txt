@@ -1,1 +1,1 @@
-﻿test: cover basic backup workflow
+﻿feat: add backup manifest format

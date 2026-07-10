@@ -1,4 +1,4 @@
-﻿# Instructor Demo - Sprint-10 - Member B
+﻿# Instructor Demo - Sprint-10 - Member C
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
@@ -8,8 +8,8 @@ Release and submission
 
 ## Files supplied by this member
 
-- docs/scoring_features.md
-- test.ps1
+- README.md
+- demo.ps1
 
 ## Application sequence
 

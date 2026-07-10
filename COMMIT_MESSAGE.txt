@@ -1,1 +1,1 @@
-﻿build: add native GUI build script
+﻿fix: improve validation and runtime statistics

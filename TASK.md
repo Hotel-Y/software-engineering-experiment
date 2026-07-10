@@ -1,4 +1,4 @@
-﻿# Instructor Demo - Sprint-00 - Member B
+﻿# Instructor Demo - Sprint-00 - Member C
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
@@ -8,7 +8,8 @@ Project planning and repository setup
 
 ## Files supplied by this member
 
-- README.md
+- .github/ISSUE_TEMPLATE/sprint-task.md
+- .github/PULL_REQUEST_TEMPLATE.md
 
 ## Application sequence
 

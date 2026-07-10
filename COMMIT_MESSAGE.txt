@@ -1,1 +1,1 @@
-﻿chore: initialize instructor demo repository
+﻿docs: add issue and pull request templates

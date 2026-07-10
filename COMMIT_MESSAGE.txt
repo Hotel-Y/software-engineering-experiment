@@ -1,1 +1,1 @@
-﻿docs: add collaboration and sprint plan
+﻿chore: initialize instructor demo repository

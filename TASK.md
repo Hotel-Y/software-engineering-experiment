@@ -1,4 +1,4 @@
-﻿# Instructor Demo - Sprint-07 - Member A
+﻿# Instructor Demo - Sprint-07 - Member C
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
@@ -8,7 +8,7 @@ Scheduled snapshots and retention
 
 ## Files supplied by this member
 
-- src/main.cpp
+- test.ps1
 
 ## Application sequence
 

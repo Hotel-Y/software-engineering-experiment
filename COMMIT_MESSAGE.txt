@@ -1,1 +1,1 @@
-﻿fix: improve validation and runtime statistics
+﻿test: add end to end regression suite

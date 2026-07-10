@@ -1,4 +1,4 @@
-﻿# Instructor Demo - Sprint-09 - Member A
+﻿# Instructor Demo - Sprint-09 - Member B
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
@@ -8,9 +8,7 @@ Quality hardening and demonstration
 
 ## Files supplied by this member
 
-- src/BackupManager.cpp
-- src/FileUtils.cpp
-- src/main.cpp
+- test.ps1
 
 ## Application sequence
 

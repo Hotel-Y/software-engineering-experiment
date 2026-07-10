@@ -1,1 +1,1 @@
-﻿feat: add backup manifest format
+﻿test: cover restore and integrity verification

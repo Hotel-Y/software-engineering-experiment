@@ -1,4 +1,4 @@
-﻿# Instructor Demo - Sprint-03 - Member B
+﻿# Instructor Demo - Sprint-03 - Member C
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
@@ -8,8 +8,7 @@ Manifest, restore, and verification
 
 ## Files supplied by this member
 
-- src/BackupManager.cpp
-- src/FileUtils.cpp
+- test.ps1
 
 ## Application sequence
 

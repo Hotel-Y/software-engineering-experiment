@@ -1,14 +1,14 @@
-﻿# Instructor Demo - Sprint-07 - Member C
+﻿# Instructor Demo - Sprint-08 - Member B
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
 ## Sprint goal
 
-Scheduled snapshots and retention
+Native graphical interface
 
 ## Files supplied by this member
 
-- test.ps1
+- gui.ps1
 
 ## Application sequence
 

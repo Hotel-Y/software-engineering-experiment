@@ -1,4 +1,4 @@
-﻿# Instructor Demo - Sprint-05 - Member B
+﻿# Instructor Demo - Sprint-05 - Member C
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
@@ -8,10 +8,7 @@ Single-file archive pack and unpack
 
 ## Files supplied by this member
 
-- src/ArchiveManager.cpp
-- src/main.cpp
-- CMakeLists.txt
-- build.ps1
+- test.ps1
 
 ## Application sequence
 

@@ -1,4 +1,4 @@
-﻿# Instructor Demo - Sprint-04 - Member B
+﻿# Instructor Demo - Sprint-04 - Member C
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
@@ -8,7 +8,7 @@ Custom backup filters
 
 ## Files supplied by this member
 
-- src/main.cpp
+- test.ps1
 
 ## Application sequence
 

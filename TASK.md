@@ -1,4 +1,4 @@
-﻿# Instructor Demo - Sprint-08 - Member B
+﻿# Instructor Demo - Sprint-08 - Member C
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
@@ -8,7 +8,7 @@ Native graphical interface
 
 ## Files supplied by this member
 
-- gui.ps1
+- build_gui.ps1
 
 ## Application sequence
 

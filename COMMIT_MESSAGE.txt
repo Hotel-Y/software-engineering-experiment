@@ -1,1 +1,1 @@
-﻿prototype: add PowerShell GUI fallback
+﻿build: add native GUI build script

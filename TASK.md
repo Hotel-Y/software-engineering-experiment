@@ -1,4 +1,4 @@
-﻿# Instructor Demo - Sprint-02 - Member A
+﻿# Instructor Demo - Sprint-02 - Member B
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
@@ -8,8 +8,8 @@ Basic recursive backup
 
 ## Files supplied by this member
 
-- include/BackupManager.h
-- src/BackupManager.cpp
+- include/FileUtils.h
+- src/FileUtils.cpp
 
 ## Application sequence
 

@@ -1,15 +1,15 @@
-﻿# Instructor Demo - Sprint-01 - Member C
+﻿# Instructor Demo - Sprint-02 - Member A
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
 ## Sprint goal
 
-Buildable C++ application skeleton
+Basic recursive backup
 
 ## Files supplied by this member
 
-- README.md
-- .gitignore
+- include/BackupManager.h
+- src/BackupManager.cpp
 
 ## Application sequence
 

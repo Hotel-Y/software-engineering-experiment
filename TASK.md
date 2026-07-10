@@ -1,15 +1,14 @@
-﻿# Instructor Demo - Sprint-09 - Member C
+﻿# Instructor Demo - Sprint-10 - Member A
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
 ## Sprint goal
 
-Quality hardening and demonstration
+Release and submission
 
 ## Files supplied by this member
 
-- demo.ps1
-- README.md
+- docs/code_design.md
 
 ## Application sequence
 

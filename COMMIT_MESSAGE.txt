@@ -1,1 +1,1 @@
-﻿docs: add issue and pull request templates
+﻿feat: add command line application skeleton

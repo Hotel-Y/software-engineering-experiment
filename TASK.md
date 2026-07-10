@@ -1,15 +1,14 @@
-﻿# Instructor Demo - Sprint-00 - Member C
+﻿# Instructor Demo - Sprint-01 - Member A
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
 ## Sprint goal
 
-Project planning and repository setup
+Buildable C++ application skeleton
 
 ## Files supplied by this member
 
-- .github/ISSUE_TEMPLATE/sprint-task.md
-- .github/PULL_REQUEST_TEMPLATE.md
+- src/main.cpp
 
 ## Application sequence
 

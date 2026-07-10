@@ -1,14 +1,14 @@
-﻿# Instructor Demo - Sprint-04 - Member C
+﻿# Instructor Demo - Sprint-05 - Member A
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
 ## Sprint goal
 
-Custom backup filters
+Single-file archive pack and unpack
 
 ## Files supplied by this member
 
-- test.ps1
+- include/ArchiveManager.h
 
 ## Application sequence
 

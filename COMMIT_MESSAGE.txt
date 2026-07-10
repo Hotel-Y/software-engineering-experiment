@@ -1,1 +1,1 @@
-﻿test: cover custom backup filters
+﻿docs: define SBA archive interface

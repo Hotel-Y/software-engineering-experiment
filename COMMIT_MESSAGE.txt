@@ -1,1 +1,1 @@
-﻿test: cover scheduled snapshot pruning
+﻿feat: add native Win32 GUI

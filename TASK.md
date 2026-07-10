@@ -1,4 +1,4 @@
-﻿# Instructor Demo - Sprint-01 - Member B
+﻿# Instructor Demo - Sprint-01 - Member C
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
@@ -8,8 +8,8 @@ Buildable C++ application skeleton
 
 ## Files supplied by this member
 
-- CMakeLists.txt
-- build.ps1
+- README.md
+- .gitignore
 
 ## Application sequence
 

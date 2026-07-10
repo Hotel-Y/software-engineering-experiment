@@ -1,1 +1,1 @@
-﻿build: add project build configuration
+﻿docs: add build and usage guide

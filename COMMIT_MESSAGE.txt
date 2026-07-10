@@ -1,1 +1,1 @@
-﻿feat: add command line application skeleton
+﻿build: add project build configuration

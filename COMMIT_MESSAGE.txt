@@ -1,1 +1,1 @@
-﻿test: cover compressed encrypted archives
+﻿feat: add scheduled backup snapshots

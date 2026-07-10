@@ -1,15 +1,14 @@
-﻿# Instructor Demo - Sprint-06 - Member C
+﻿# Instructor Demo - Sprint-07 - Member A
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
 ## Sprint goal
 
-RLE compression and OpenSSL AES-256-GCM encryption
+Scheduled snapshots and retention
 
 ## Files supplied by this member
 
-- test.ps1
-- demo.ps1
+- src/main.cpp
 
 ## Application sequence
 

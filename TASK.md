@@ -1,4 +1,4 @@
-﻿# Instructor Demo - Sprint-09 - Member B
+﻿# Instructor Demo - Sprint-09 - Member C
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
@@ -8,7 +8,8 @@ Quality hardening and demonstration
 
 ## Files supplied by this member
 
-- test.ps1
+- demo.ps1
+- README.md
 
 ## Application sequence
 

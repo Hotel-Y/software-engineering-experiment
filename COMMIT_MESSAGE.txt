@@ -1,1 +1,1 @@
-﻿test: add end to end regression suite
+﻿feat: add automated demonstration workflow

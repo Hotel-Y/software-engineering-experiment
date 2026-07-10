@@ -1,1 +1,1 @@
-﻿feat: add RLE compression
+﻿feat: add OpenSSL AES-256-GCM encryption

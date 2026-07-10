@@ -1,4 +1,4 @@
-﻿# Instructor Demo - Sprint-06 - Member A
+﻿# Instructor Demo - Sprint-06 - Member B
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
@@ -9,6 +9,10 @@ RLE compression and OpenSSL AES-256-GCM encryption
 ## Files supplied by this member
 
 - src/ArchiveManager.cpp
+- include/ArchiveManager.h
+- setup_openssl.ps1
+- build.ps1
+- CMakeLists.txt
 
 ## Application sequence
 

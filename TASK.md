@@ -1,14 +1,14 @@
-﻿# Instructor Demo - Sprint-05 - Member C
+﻿# Instructor Demo - Sprint-06 - Member A
 
 This is a synthetic instructor demonstration package. It must not be represented as student-authored work.
 
 ## Sprint goal
 
-Single-file archive pack and unpack
+RLE compression and OpenSSL AES-256-GCM encryption
 
 ## Files supplied by this member
 
-- test.ps1
+- src/ArchiveManager.cpp
 
 ## Application sequence
 

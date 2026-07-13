@@ -65,7 +65,7 @@ if (!(Test-Path (Join-Path $archiveRestore "docs\a.txt"))) {
 $secureArchive = Join-Path $sandbox "secure_backup.sba"
 $secureUnpack = Join-Path $sandbox "secure_unpack"
 $secureRestore = Join-Path $sandbox "secure_restore"
-& $exe pack $backup $secureArchive --compress=rle --password=secret123
+& $exe pack $backup $secureArchive --password=secret123
 $ErrorActionPreference = "Continue"
 & $exe unpack $secureArchive (Join-Path $sandbox "wrong_password_unpack") --password=wrong 2>$null
 $wrongPasswordExit = $LASTEXITCODE

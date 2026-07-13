@@ -10,7 +10,6 @@ struct ArchiveStats {
 };
 
 struct ArchiveOptions {
-    bool useRleCompression = false;
     std::string password;
 };
 

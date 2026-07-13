@@ -95,9 +95,9 @@ $browseRestore.Text = "..."
 $browseRestore.SetBounds(635, 132, 36, 24)
 $browseRestore.Add_Click({ Select-Folder $restoreBox })
 
-$compressCheck = New-Object System.Windows.Forms.CheckBox
-$compressCheck.Text = "RLE compression"
-$compressCheck.SetBounds(120, 172, 140, 24)
+$compressionLabel = New-Object System.Windows.Forms.Label
+$compressionLabel.Text = "Compression: LZ77 + Huffman (block-wise)"
+$compressionLabel.SetBounds(120, 176, 240, 20)
 
 $passwordLabel = New-Object System.Windows.Forms.Label
 $passwordLabel.Text = "Password"
@@ -123,7 +123,6 @@ $packButton.Text = "Pack"
 $packButton.SetBounds(140, 212, 100, 32)
 $packButton.Add_Click({
     $args = @("pack", $backupBox.Text, $archiveBox.Text)
-    if ($compressCheck.Checked) { $args += "--compress=rle" }
     if ($passwordBox.Text.Length -gt 0) { $args += "--password=$($passwordBox.Text)" }
     Run-Command $args $outputBox
 })
@@ -154,7 +153,7 @@ $verifyButton.Add_Click({
 $form.Controls.AddRange(@(
     $sourceBox, $backupBox, $archiveBox, $restoreBox,
     $browseSource, $browseBackup, $browseArchive, $browseRestore,
-    $compressCheck, $passwordLabel, $passwordBox,
+    $compressionLabel, $passwordLabel, $passwordBox,
     $backupButton, $packButton, $unpackButton, $restoreButton, $verifyButton,
     $outputBox
 ))

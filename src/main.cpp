@@ -24,7 +24,7 @@ void printUsage() {
         << "  sbm schedule <source_dir> <snapshot_root> <interval_seconds> <count> [--keep=N] [backup options]\n"
         << "  sbm restore <backup_dir> <restore_dir>\n"
         << "  sbm verify <backup_dir>\n"
-        << "  sbm pack <backup_dir> <archive_file> [--compress=rle] [--password=secret]\n"
+        << "  sbm pack <backup_dir> <archive_file> [--password=secret]\n"
         << "  sbm unpack <archive_file> <output_dir> [--password=secret]\n";
 }
 
@@ -104,9 +104,7 @@ ArchiveOptions parseArchiveOptions(int argc, char* argv[], int firstOptionIndex)
     ArchiveOptions options;
     for (int i = firstOptionIndex; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--compress=rle") {
-            options.useRleCompression = true;
-        } else if (arg.rfind("--password=", 0) == 0) {
+        if (arg.rfind("--password=", 0) == 0) {
             options.password = arg.substr(11);
         } else {
             throw std::runtime_error("Unknown archive option: " + arg);

@@ -31,8 +31,8 @@ Write-Host "1. Backup with custom filters"
 Write-Host "2. Verify backup"
 & $exe verify $backup
 
-Write-Host "3. Pack with RLE compression and OpenSSL AES-256-GCM encryption"
-& $exe pack $backup $archive --compress=rle --password=secret123
+Write-Host "3. Pack with LZ77 + Huffman compression and OpenSSL AES-256-GCM encryption"
+& $exe pack $backup $archive --password=secret123
 
 Write-Host "4. Wrong password should fail"
 $oldPreference = $ErrorActionPreference

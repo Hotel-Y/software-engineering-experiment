@@ -10,7 +10,6 @@ constexpr int idArchive = 103;
 constexpr int idRestore = 104;
 constexpr int idPassword = 105;
 constexpr int idOutput = 106;
-constexpr int idCompress = 107;
 constexpr int idBackupButton = 201;
 constexpr int idPackButton = 202;
 constexpr int idUnpackButton = 203;
@@ -43,58 +42,77 @@ std::wstring executablePath() {
 }
 
 void runCommand(const std::wstring& command) {
-    const auto tempFile = std::wstring(MAX_PATH, L'\0');
-    wchar_t tempPath[MAX_PATH]{};
-    wchar_t tempName[MAX_PATH]{};
-    GetTempPathW(MAX_PATH, tempPath);
-    GetTempFileNameW(tempPath, L"sbm", 0, tempName);
+    // Capture the child process stdout+stderr through an anonymous pipe.
+    // CreateProcessW does not interpret shell redirection (">", "2>&1"), so we
+    // must redirect via STARTUPINFO handles instead of relying on cmd syntax.
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    sa.lpSecurityDescriptor = nullptr;
 
-    const auto fullCommand = quote(executablePath()) + L" " + command + L" > " + quote(tempName) + L" 2>&1";
+    HANDLE readEnd = nullptr;
+    HANDLE writeEnd = nullptr;
+    if (!CreatePipe(&readEnd, &writeEnd, &sa, 0)) {
+        setOutput(L"Failed to create output pipe.");
+        return;
+    }
+    // The parent's read end must not be inherited by the child.
+    SetHandleInformation(readEnd, HANDLE_FLAG_INHERIT, 0);
+
     STARTUPINFOW startup{};
-    PROCESS_INFORMATION process{};
     startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = nullptr;
+    startup.hStdOutput = writeEnd;
+    startup.hStdError = writeEnd;
 
+    const auto fullCommand = quote(executablePath()) + L" " + command;
     std::vector<wchar_t> mutableCommand(fullCommand.begin(), fullCommand.end());
     mutableCommand.push_back(L'\0');
 
-    if (!CreateProcessW(nullptr, mutableCommand.data(), nullptr, nullptr, FALSE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
+    PROCESS_INFORMATION process{};
+    const BOOL launched = CreateProcessW(nullptr, mutableCommand.data(), nullptr, nullptr,
+                                         TRUE, CREATE_NO_WINDOW, nullptr, nullptr,
+                                         &startup, &process);
+    // The child has inherited its own copy of the write end; close ours so
+    // ReadFile returns EOF once the child exits.
+    CloseHandle(writeEnd);
+
+    if (!launched) {
+        CloseHandle(readEnd);
         setOutput(L"Failed to start sbm.exe. Please build the project first.");
         return;
+    }
+
+    std::string bytes;
+    char buffer[4096];
+    DWORD read = 0;
+    while (ReadFile(readEnd, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
+        bytes.append(buffer, read);
     }
 
     WaitForSingleObject(process.hProcess, INFINITE);
     CloseHandle(process.hProcess);
     CloseHandle(process.hThread);
+    CloseHandle(readEnd);
 
-    HANDLE file = CreateFileW(tempName, GENERIC_READ, FILE_SHARE_READ, nullptr,
-                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) {
-        setOutput(L"Command finished, but output could not be read.");
-        DeleteFileW(tempName);
+    if (bytes.empty()) {
+        setOutput(L"(command produced no output)");
         return;
     }
 
-    DWORD size = GetFileSize(file, nullptr);
-    std::string bytes(size, '\0');
-    DWORD read = 0;
-    if (size > 0) {
-        ReadFile(file, bytes.data(), size, &read, nullptr);
-    }
-    CloseHandle(file);
-    DeleteFileW(tempName);
-
-    int wideSize = MultiByteToWideChar(CP_UTF8, 0, bytes.data(), static_cast<int>(read), nullptr, 0);
+    int wideSize = MultiByteToWideChar(CP_UTF8, 0, bytes.data(),
+                                        static_cast<int>(bytes.size()), nullptr, 0);
+    std::wstring output;
+    const UINT codePage = wideSize > 0 ? CP_UTF8 : CP_ACP;
     if (wideSize <= 0) {
-        wideSize = MultiByteToWideChar(CP_ACP, 0, bytes.data(), static_cast<int>(read), nullptr, 0);
-        std::wstring output(wideSize, L'\0');
-        MultiByteToWideChar(CP_ACP, 0, bytes.data(), static_cast<int>(read), output.data(), wideSize);
-        setOutput(output);
-    } else {
-        std::wstring output(wideSize, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, bytes.data(), static_cast<int>(read), output.data(), wideSize);
-        setOutput(output);
+        wideSize = MultiByteToWideChar(CP_ACP, 0, bytes.data(),
+                                       static_cast<int>(bytes.size()), nullptr, 0);
     }
+    output.resize(wideSize);
+    MultiByteToWideChar(codePage, 0, bytes.data(), static_cast<int>(bytes.size()),
+                        output.data(), wideSize);
+    setOutput(output);
 }
 
 void addLabel(HWND window, const wchar_t* text, int x, int y) {
@@ -125,8 +143,8 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         addEdit(window, idArchive, 110, 92, 560);
         addEdit(window, idRestore, 110, 128, 560);
         addEdit(window, idPassword, 110, 164, 220);
-        CreateWindowW(L"BUTTON", L"RLE compression", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                      360, 164, 150, 24, window, reinterpret_cast<HMENU>(idCompress), nullptr, nullptr);
+        CreateWindowW(L"STATIC", L"Compression: LZ77 + Huffman (block-wise)",
+                      WS_CHILD | WS_VISIBLE, 360, 168, 300, 18, window, nullptr, nullptr, nullptr);
         addButton(window, idBackupButton, L"Backup", 20, 210);
         addButton(window, idPackButton, L"Pack", 140, 210);
         addButton(window, idUnpackButton, L"Unpack", 260, 210);
@@ -143,13 +161,11 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         const auto archive = getText(window, idArchive);
         const auto restore = getText(window, idRestore);
         const auto password = getText(window, idPassword);
-        const bool compress = SendMessageW(GetDlgItem(window, idCompress), BM_GETCHECK, 0, 0) == BST_CHECKED;
 
         if (id == idBackupButton) {
             runCommand(L"backup " + quote(source) + L" " + quote(backup) + L" --overwrite");
         } else if (id == idPackButton) {
             auto command = L"pack " + quote(backup) + L" " + quote(archive);
-            if (compress) command += L" --compress=rle";
             if (!password.empty()) command += L" --password=" + password;
             runCommand(command);
         } else if (id == idUnpackButton) {

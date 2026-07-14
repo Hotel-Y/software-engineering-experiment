@@ -13,10 +13,11 @@
 #include <queue>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace {
-constexpr std::array<char, 8> archiveMagic = {'S', 'B', 'A', '4', '\r', '\n', '\0', '\1'};
+constexpr std::array<char, 8> archiveMagic = {'S', 'B', 'A', '5', '\r', '\n', '\0', '\1'};
 constexpr const char* manifestName = "manifest.sbm";
 constexpr std::uint64_t flagCompressed = 1;  // payload is LZ+Huffman compressed, block-wise
 constexpr std::uint64_t flagEncrypted = 2;
@@ -30,8 +31,48 @@ constexpr int pbkdf2Iterations = 100000;
 // blowup on multi-gigabyte inputs: at any moment we only hold one block's worth of
 // data plus its LZ/Huffman buffers, independent of the total file size.
 constexpr std::size_t blockSize = 1u << 20;  // 1 MiB of source per block
+constexpr std::uint64_t maxLzStreamSize = blockSize + blockSize / 8 + 8;
+constexpr std::uint64_t maxArchivePathBytes = 1u << 20;
 // Per-block flags (first byte of each block record in the payload).
 constexpr unsigned char blockFlagRawStored = 1;  // block payload is raw original bytes, not huffman(lz)
+
+bool archivePathSameOrInside(const std::filesystem::path& child,
+                             const std::filesystem::path& parent) {
+    const auto absoluteChild = std::filesystem::weakly_canonical(child);
+    const auto absoluteParent = std::filesystem::weakly_canonical(parent);
+
+    auto childIt = absoluteChild.begin();
+    auto parentIt = absoluteParent.begin();
+    for (; parentIt != absoluteParent.end(); ++parentIt, ++childIt) {
+        if (childIt == absoluteChild.end() || *childIt != *parentIt) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::filesystem::path resolveArchivePathInside(const std::filesystem::path& root,
+                                               const std::string& relativePath) {
+    const auto relative = pathFromUtf8(relativePath).lexically_normal();
+    if (relative.empty() || relative == "." || relative.is_absolute()
+        || relative.has_root_name() || relative.has_root_directory()) {
+        throw std::runtime_error("Archive path must be a non-empty relative path: "
+                                 + relativePath);
+    }
+    for (const auto& part : relative) {
+        if (part == "..") {
+            throw std::runtime_error("Archive path escapes its root directory: "
+                                     + relativePath);
+        }
+    }
+
+    const auto candidate = std::filesystem::weakly_canonical(root / relative);
+    if (!archivePathSameOrInside(candidate, root)) {
+        throw std::runtime_error("Archive path escapes its root directory: "
+                                 + relativePath);
+    }
+    return candidate;
+}
 
 void ensureDirectory(const std::filesystem::path& path) {
     std::error_code ec;
@@ -211,6 +252,9 @@ std::vector<unsigned char> lzDecompress(const std::vector<unsigned char>& input,
     if (output.size() != expectedSize) {
         throw std::runtime_error("LZ decode size mismatch.");
     }
+    if (bi != input.size()) {
+        throw std::runtime_error("LZ stream contains trailing data.");
+    }
     return output;
 }
 
@@ -277,8 +321,8 @@ std::array<unsigned char, 256> huffmanCodeLengths(const std::vector<unsigned cha
         stack.pop_back();
         const Node& node = nodes[idx];
         if (node.symbol >= 0) {
-            if (depth > 255) {
-                throw std::runtime_error("Huffman code length exceeds 255 bits.");
+            if (depth > 63) {
+                throw std::runtime_error("Huffman code length exceeds the encoder limit.");
             }
             lengths[node.symbol] = static_cast<unsigned char>(depth == 0 ? 1 : depth);
         } else {
@@ -300,6 +344,9 @@ std::vector<unsigned char> huffmanCompress(const std::vector<unsigned char>& inp
     symbols.reserve(256);
     for (int s = 0; s < 256; ++s) {
         if (lengths[s] > 0) symbols.push_back(s);
+    }
+    if (symbols.empty()) {
+        throw std::runtime_error("Broken Huffman codebook.");
     }
     std::sort(symbols.begin(), symbols.end(), [&](int a, int b) {
         if (lengths[a] != lengths[b]) return lengths[a] < lengths[b];
@@ -363,12 +410,18 @@ std::vector<unsigned char> huffmanDecompress(const std::vector<unsigned char>& i
     if (expectedSize == 0) {
         return {};
     }
+    if (expectedSize > maxLzStreamSize) {
+        throw std::runtime_error("Huffman output exceeds the supported block size.");
+    }
 
     // rebuild the canonical codes (same assignment as the encoder) into a trie
     std::vector<int> symbols;
     symbols.reserve(256);
     for (int s = 0; s < 256; ++s) {
         if (lengths[s] > 0) symbols.push_back(s);
+    }
+    if (symbols.empty()) {
+        throw std::runtime_error("Broken Huffman codebook.");
     }
     std::sort(symbols.begin(), symbols.end(), [&](int a, int b) {
         if (lengths[a] != lengths[b]) return lengths[a] < lengths[b];
@@ -385,9 +438,15 @@ std::vector<unsigned char> huffmanDecompress(const std::vector<unsigned char>& i
     int previousLength = 0;
     for (const int s : symbols) {
         const int length = lengths[s];
+        if (length > 63 || length < previousLength) {
+            throw std::runtime_error("Broken Huffman code length.");
+        }
         code <<= (length - previousLength);
         int node = 0;
         for (int i = length - 1; i >= 0; --i) {
+            if (trie[node].symbol >= 0) {
+                throw std::runtime_error("Broken Huffman prefix code.");
+            }
             const int bit = static_cast<int>((code >> i) & 1);
             if (bit == 0) {
                 if (trie[node].left == -1) {
@@ -402,6 +461,9 @@ std::vector<unsigned char> huffmanDecompress(const std::vector<unsigned char>& i
                 }
                 node = trie[node].right;
             }
+        }
+        if (trie[node].symbol >= 0 || trie[node].left != -1 || trie[node].right != -1) {
+            throw std::runtime_error("Broken Huffman prefix code.");
         }
         trie[node].symbol = s;
         code += 1;
@@ -541,6 +603,9 @@ std::array<unsigned char, N> readArray(std::istream& input) {
 }
 
 std::vector<unsigned char> readPayload(std::istream& input, std::uint64_t bytes) {
+    if (bytes > blockSize) {
+        throw std::runtime_error("Archive block payload exceeds the supported size.");
+    }
     std::vector<unsigned char> payload(static_cast<std::size_t>(bytes));
     if (!payload.empty()) {
         input.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
@@ -551,20 +616,6 @@ std::vector<unsigned char> readPayload(std::istream& input, std::uint64_t bytes)
     return payload;
 }
 
-std::filesystem::path safeOutputPath(const std::filesystem::path& outputDir,
-                                     const std::string& relativePath) {
-    const auto base = std::filesystem::weakly_canonical(outputDir);
-    const auto candidate = std::filesystem::weakly_canonical(outputDir / pathFromUtf8(relativePath));
-
-    auto baseIt = base.begin();
-    auto candidateIt = candidate.begin();
-    for (; baseIt != base.end(); ++baseIt, ++candidateIt) {
-        if (candidateIt == candidate.end() || *candidateIt != *baseIt) {
-            throw std::runtime_error("Archive entry path escapes output directory: " + relativePath);
-        }
-    }
-    return candidate;
-}
 }
 
 ArchiveManager::ArchiveManager(ArchiveOptions options) : options_(std::move(options)) {}
@@ -573,6 +624,29 @@ ArchiveStats ArchiveManager::pack(const std::filesystem::path& backupDir,
                                   const std::filesystem::path& archiveFile) const {
     const auto manifestFile = backupDir / manifestName;
     const auto manifest = Manifest::load(manifestFile);
+
+    if (archivePathSameOrInside(archiveFile, backupDir)) {
+        throw std::runtime_error("Archive file must not be inside the backup directory.");
+    }
+
+    for (const auto& entry : manifest.entries()) {
+        const auto sourcePath = resolveArchivePathInside(backupDir, entry.relativePath);
+        if (entry.isDirectory) {
+            if (!std::filesystem::exists(sourcePath)
+                || !std::filesystem::is_directory(sourcePath)) {
+                throw std::runtime_error("Backup directory entry is missing: "
+                                         + pathToUtf8(sourcePath));
+            }
+            continue;
+        }
+        if (!std::filesystem::exists(sourcePath)
+            || !std::filesystem::is_regular_file(sourcePath)
+            || std::filesystem::file_size(sourcePath) != entry.size
+            || fnv1aFileChecksum(sourcePath) != entry.checksum) {
+            throw std::runtime_error("Backup file does not match its manifest: "
+                                     + pathToUtf8(sourcePath));
+        }
+    }
 
     if (archiveFile.has_parent_path()) {
         ensureDirectory(archiveFile.parent_path());
@@ -616,7 +690,7 @@ ArchiveStats ArchiveManager::pack(const std::filesystem::path& backupDir,
         // Stream the file block-by-block so memory stays bounded on multi-gigabyte
         // inputs (problem 4 fix): we never hold the whole file, its LZ expansion, or
         // an assembled compressed copy in memory -- only one block at a time.
-        const auto srcPath = backupDir / pathFromUtf8(entry.relativePath);
+        const auto srcPath = resolveArchivePathInside(backupDir, entry.relativePath);
         std::ifstream in(srcPath, std::ios::binary);
         if (!in) {
             throw std::runtime_error("Cannot read file: " + pathToUtf8(srcPath));
@@ -699,118 +773,195 @@ ArchiveStats ArchiveManager::unpack(const std::filesystem::path& archiveFile,
         throw std::runtime_error("Unsupported or broken archive format.");
     }
 
-    ensureDirectory(outputDir);
-    Manifest manifest;
-    ArchiveStats stats;
-    const auto entryCount = readUint64(input);
+    const bool outputExisted = std::filesystem::exists(outputDir);
+    if (outputExisted
+        && (!std::filesystem::is_directory(outputDir) || !std::filesystem::is_empty(outputDir))) {
+        throw std::runtime_error("Unpack output directory must be empty.");
+    }
+    if (outputDir.has_parent_path()) {
+        ensureDirectory(outputDir.parent_path());
+    }
 
-    for (std::uint64_t i = 0; i < entryCount; ++i) {
-        const int type = input.get();
-        if (type != 'D' && type != 'F') {
-            throw std::runtime_error("Broken archive entry type.");
+    std::filesystem::path stagingDir;
+    for (int attempt = 0; attempt < 1000; ++attempt) {
+        stagingDir = outputDir;
+        stagingDir += ".sbm-unpack-tmp-" + std::to_string(attempt);
+        if (!std::filesystem::exists(stagingDir)) {
+            break;
+        }
+        stagingDir.clear();
+    }
+    if (stagingDir.empty()) {
+        throw std::runtime_error("Cannot allocate a temporary unpack directory.");
+    }
+    ensureDirectory(stagingDir);
+
+    try {
+        Manifest manifest;
+        ArchiveStats stats;
+        std::unordered_set<std::string> archivePaths;
+        const auto archiveBytes = std::filesystem::file_size(archiveFile);
+        const auto entryCount = readUint64(input);
+        constexpr std::uint64_t minimumEntryBytes = 1 + 8 + 1 + 5 * 8 + saltSize;
+        if (entryCount > archiveBytes / minimumEntryBytes) {
+            throw std::runtime_error("Archive entry count is not credible for this file size.");
         }
 
-        const auto pathLength = readUint64(input);
-        std::string relativePath(pathLength, '\0');
-        input.read(relativePath.data(), static_cast<std::streamsize>(pathLength));
-        if (!input) {
-            throw std::runtime_error("Broken archive path.");
-        }
-
-        ManifestEntry entry;
-        entry.isDirectory = type == 'D';
-        entry.relativePath = relativePath;
-        entry.size = static_cast<std::uintmax_t>(readUint64(input));
-        entry.modifiedTime = static_cast<std::int64_t>(readUint64(input));
-        entry.checksum = readUint64(input);
-        const auto flags = readUint64(input);
-        const auto payloadSize = readUint64(input);
-        const auto salt = readArray<saltSize>(input);  // per-file; iv/tag live inside each block
-        manifest.add(entry);
-
-        const auto outputPath = safeOutputPath(outputDir, relativePath);
-        if (entry.isDirectory) {
-            ensureDirectory(outputPath);
-            continue;
-        }
-
-        ensureDirectory(outputPath.parent_path());
-        const bool encrypted = (flags & flagEncrypted) != 0;
-        const bool compressed = (flags & flagCompressed) != 0;
-        if (encrypted && options_.password.empty()) {
-            throw std::runtime_error("Archive is encrypted. Provide --password=<value>.");
-        }
-        std::array<unsigned char, keySize> key{};
-        if (encrypted) {
-            key = deriveKey(options_.password, salt);  // once per file
-        }
-
-        std::ofstream out(outputPath, std::ios::binary);
-        if (!out) {
-            throw std::runtime_error("Cannot write file: " + pathToUtf8(outputPath));
-        }
-
-        // decode block-by-block (reverse pipeline: decrypt -> Huffman -> LZ) so the
-        // working set stays bounded by one block, not the whole file.
-        std::uint64_t consumed = 0;
-        while (consumed < payloadSize) {
-            const int blockFlagsByte = input.get();
-            if (blockFlagsByte == EOF) {
-                throw std::runtime_error("Broken archive: missing block flags.");
+        for (std::uint64_t i = 0; i < entryCount; ++i) {
+            const int type = input.get();
+            if (type != 'D' && type != 'F') {
+                throw std::runtime_error("Broken archive entry type.");
             }
-            consumed += 1;
-            const auto rawStored = (static_cast<unsigned char>(blockFlagsByte) & blockFlagRawStored) != 0;
-            const auto blockOriginalSize = readUint64(input);
-            consumed += 8;
-            const auto compSize = readUint64(input);
-            consumed += 8;
-            std::array<unsigned char, ivSize> iv{};
-            std::array<unsigned char, tagSize> tag{};
-            if (encrypted) {
-                iv = readArray<ivSize>(input);
-                tag = readArray<tagSize>(input);
-                consumed += ivSize + tagSize;
+
+            const auto pathLength = readUint64(input);
+            if (pathLength == 0 || pathLength > maxArchivePathBytes
+                || pathLength > archiveBytes) {
+                throw std::runtime_error("Broken archive path length.");
             }
-            auto blockPayload = readPayload(input, compSize);
-            consumed += compSize;
-            if (encrypted) {
-                blockPayload = decryptAesGcm(blockPayload, key, iv, tag);
+            std::string relativePath(static_cast<std::size_t>(pathLength), '\0');
+            input.read(relativePath.data(), static_cast<std::streamsize>(pathLength));
+            if (!input || !archivePaths.insert(relativePath).second) {
+                throw std::runtime_error("Broken or duplicate archive path.");
             }
-            if (rawStored) {
-                // payload is already the original bytes; write through (verify size matches)
-                if (blockPayload.size() != blockOriginalSize) {
-                    throw std::runtime_error("Raw-stored block size mismatch.");
+
+            ManifestEntry entry;
+            entry.isDirectory = type == 'D';
+            entry.relativePath = relativePath;
+            entry.size = static_cast<std::uintmax_t>(readUint64(input));
+            entry.modifiedTime = static_cast<std::int64_t>(readUint64(input));
+            entry.checksum = readUint64(input);
+            const auto flags = readUint64(input);
+            const auto payloadSize = readUint64(input);
+            const auto salt = readArray<saltSize>(input);
+            if ((flags & ~(flagCompressed | flagEncrypted)) != 0) {
+                throw std::runtime_error("Archive entry contains unsupported flags.");
+            }
+            manifest.add(entry);
+
+            const auto outputPath = resolveArchivePathInside(stagingDir, relativePath);
+            if (entry.isDirectory) {
+                if (flags != 0 || payloadSize != 0 || entry.size != 0 || entry.checksum != 0) {
+                    throw std::runtime_error("Directory archive entry contains file payload metadata.");
                 }
-                if (!blockPayload.empty()) {
+                ensureDirectory(outputPath);
+                continue;
+            }
+
+            if ((flags & flagCompressed) == 0 || (entry.size > 0 && payloadSize == 0)) {
+                throw std::runtime_error("File archive entry has an invalid block container.");
+            }
+            const bool encrypted = (flags & flagEncrypted) != 0;
+            if (encrypted && options_.password.empty()) {
+                throw std::runtime_error("Archive is encrypted. Provide --password=<value>.");
+            }
+            std::array<unsigned char, keySize> key{};
+            if (encrypted) {
+                key = deriveKey(options_.password, salt);
+            }
+
+            ensureDirectory(outputPath.parent_path());
+            std::ofstream out(outputPath, std::ios::binary);
+            if (!out) {
+                throw std::runtime_error("Cannot write file: " + pathToUtf8(outputPath));
+            }
+
+            std::uint64_t remaining = payloadSize;
+            std::uintmax_t produced = 0;
+            while (remaining > 0) {
+                const std::uint64_t headerBytes = 1 + 8 + 8 + (encrypted ? ivSize + tagSize : 0);
+                if (remaining < headerBytes) {
+                    throw std::runtime_error("Archive block header exceeds its entry payload.");
+                }
+                const int blockFlagsByte = input.get();
+                if (blockFlagsByte == EOF) {
+                    throw std::runtime_error("Broken archive: missing block flags.");
+                }
+                const auto blockFlags = static_cast<unsigned char>(blockFlagsByte);
+                if ((blockFlags & ~blockFlagRawStored) != 0) {
+                    throw std::runtime_error("Archive block contains unsupported flags.");
+                }
+                const bool rawStored = (blockFlags & blockFlagRawStored) != 0;
+                const auto blockOriginalSize = readUint64(input);
+                const auto storedSize = readUint64(input);
+                remaining -= 1 + 8 + 8;
+                if (blockOriginalSize == 0 || blockOriginalSize > blockSize
+                    || blockOriginalSize > entry.size - produced) {
+                    throw std::runtime_error("Archive block original size is invalid.");
+                }
+
+                std::array<unsigned char, ivSize> iv{};
+                std::array<unsigned char, tagSize> tag{};
+                if (encrypted) {
+                    iv = readArray<ivSize>(input);
+                    tag = readArray<tagSize>(input);
+                    remaining -= ivSize + tagSize;
+                }
+                if (storedSize == 0 || storedSize > remaining || storedSize > blockSize) {
+                    throw std::runtime_error("Archive block stored size is invalid.");
+                }
+                auto blockPayload = readPayload(input, storedSize);
+                remaining -= storedSize;
+                if (encrypted) {
+                    blockPayload = decryptAesGcm(blockPayload, key, iv, tag);
+                }
+
+                if (rawStored) {
+                    if (blockPayload.size() != blockOriginalSize) {
+                        throw std::runtime_error("Raw-stored block size mismatch.");
+                    }
                     out.write(reinterpret_cast<const char*>(blockPayload.data()),
                               static_cast<std::streamsize>(blockPayload.size()));
-                }
-            } else if (compressed && !blockPayload.empty()) {
-                auto lzStream = huffmanDecompress(blockPayload);
-                auto block = lzDecompress(lzStream, static_cast<std::size_t>(blockOriginalSize));
-                if (!block.empty()) {
+                } else {
+                    auto lzStream = huffmanDecompress(blockPayload);
+                    auto block = lzDecompress(lzStream,
+                                              static_cast<std::size_t>(blockOriginalSize));
                     out.write(reinterpret_cast<const char*>(block.data()),
                               static_cast<std::streamsize>(block.size()));
                 }
+                if (!out) {
+                    throw std::runtime_error("Failed to write file: " + pathToUtf8(outputPath));
+                }
+                produced += static_cast<std::uintmax_t>(blockOriginalSize);
             }
-            // (compressed + empty payload -> empty block; we wrote nothing, as expected)
-        }
-        out.close();
-        if (!out) {
-            throw std::runtime_error("Failed to write file: " + pathToUtf8(outputPath));
+            out.close();
+            if (!out || produced != entry.size) {
+                throw std::runtime_error("Unpacked file size mismatch: " + pathToUtf8(outputPath));
+            }
+
+            const auto checksum = fnv1aFileChecksum(outputPath);
+            if (checksum != entry.checksum) {
+                throw std::runtime_error("Unpacked file checksum mismatch: " + pathToUtf8(outputPath));
+            }
+            std::filesystem::last_write_time(outputPath, fromUnixSeconds(entry.modifiedTime));
+
+            ++stats.files;
+            stats.bytes += entry.size;
+            stats.storedBytes += payloadSize;
         }
 
-        const auto checksum = fnv1aFileChecksum(outputPath);
-        if (checksum != entry.checksum) {
-            throw std::runtime_error("Unpacked file checksum mismatch: " + pathToUtf8(outputPath));
+        if (input.peek() != std::char_traits<char>::eof()) {
+            throw std::runtime_error("Archive contains trailing data.");
         }
-        std::filesystem::last_write_time(outputPath, fromUnixSeconds(entry.modifiedTime));
+        manifest.save(stagingDir / manifestName);
 
-        ++stats.files;
-        stats.bytes += entry.size;
-        stats.storedBytes += payloadSize;
+        std::error_code ec;
+        if (outputExisted) {
+            std::filesystem::remove(outputDir, ec);
+            if (ec) {
+                throw std::runtime_error("Cannot replace the empty unpack output directory.");
+            }
+        }
+        std::filesystem::rename(stagingDir, outputDir, ec);
+        if (ec) {
+            if (outputExisted) {
+                std::filesystem::create_directories(outputDir, ec);
+            }
+            throw std::runtime_error("Cannot finalize the unpack output directory.");
+        }
+        return stats;
+    } catch (...) {
+        std::error_code cleanupError;
+        std::filesystem::remove_all(stagingDir, cleanupError);
+        throw;
     }
-
-    manifest.save(outputDir / manifestName);
-    return stats;
 }

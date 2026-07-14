@@ -2,7 +2,7 @@
 """Inspect a Simple Backup Archive (.sba).
 
 Format (little-endian), from src/ArchiveManager.cpp:
-  magic: 8 bytes  "SBA4\r\n\0\x01"
+  magic: 8 bytes  "SBA5\r\n\0\x01"
   uint64 entryCount
   per entry:
     1 byte type      ('F' file / 'D' dir)
@@ -27,7 +27,7 @@ bytes using blockOriginalSize) to prove the pipeline round-trips.
 """
 import struct, sys, pathlib
 
-MAGIC = b"SBA4\r\n\0\x01"
+MAGIC = b"SBA5\r\n\0\x01"
 FLAG_COMPRESSED, FLAG_ENCRYPTED = 1, 2
 
 def read_u64(f):

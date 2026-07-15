@@ -1,0 +1,29 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [master, develop]
+  pull_request:
+    branches: [master, develop]
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned OpenSSL development package
+        shell: pwsh
+        run: .\setup_openssl.ps1
+
+      - name: Build and run regression suite
+        shell: pwsh
+        run: .\test.ps1

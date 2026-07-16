@@ -92,6 +92,7 @@ std::wstring executablePath() {
     return dir + L"\\sbm.exe";
 }
 
+// 读取下拉框当前选项；未选择时返回空字符串，调用方据此省略 CLI 参数。
 std::wstring getComboText(HWND window, int comboId) {
     const HWND combo = GetDlgItem(window, comboId);
     const int idx = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
@@ -101,6 +102,7 @@ std::wstring getComboText(HWND window, int comboId) {
     return buffer;
 }
 
+// 重置动态筛选下拉框并恢复首项“(none)”，表示不启用该过滤条件。
 void clearCombo(HWND window, int comboId) {
     const HWND combo = GetDlgItem(window, comboId);
     SendMessageW(combo, CB_RESETCONTENT, 0, 0);
@@ -108,6 +110,7 @@ void clearCombo(HWND window, int comboId) {
     SendMessageW(combo, CB_SETCURSEL, 0, 0);
 }
 
+// 向下拉框批量加入固定候选值，并默认选中第一项。
 void addComboStrings(HWND window, int comboId, const std::vector<const wchar_t*>& items) {
     const HWND combo = GetDlgItem(window, comboId);
     for (const auto* item : items) {
@@ -116,21 +119,25 @@ void addComboStrings(HWND window, int comboId, const std::vector<const wchar_t*>
     SendMessageW(combo, CB_SETCURSEL, 0, 0);
 }
 
+// 创建只能选择预设项的下拉框，避免日期等规则出现任意格式输入。
 void addCombo(HWND window, int id, int x, int y, int width) {
     CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
                   x, y, width, 200, window, reinterpret_cast<HMENU>(id), nullptr, nullptr);
 }
 
+// 路径输入框旁的“...”按钮只负责触发对应系统选择对话框。
 void addBrowseButton(HWND window, int id, int x, int y) {
     CreateWindowW(L"BUTTON", L"...", WS_CHILD | WS_VISIBLE,
                   x, y, 30, 24, window, reinterpret_cast<HMENU>(id), nullptr, nullptr);
 }
 
+// 递归扫描源目录，从真实文件中提取扩展名、文件主名和顶层目录作为筛选候选。
 void scanSourceAndPopulateFilters(HWND window, const std::wstring& sourcePath) {
     if (sourcePath.empty()) return;
     std::error_code ec;
     if (!std::filesystem::is_directory(sourcePath, ec)) return;
 
+    // set 同时完成去重和排序，使下拉选项稳定且易查找。
     std::set<std::wstring> exts, names, paths;
     for (const auto& item : std::filesystem::recursive_directory_iterator(
              sourcePath, std::filesystem::directory_options::skip_permission_denied, ec)) {
@@ -162,6 +169,7 @@ void scanSourceAndPopulateFilters(HWND window, const std::wstring& sourcePath) {
     }
 }
 
+// 打开 Windows 文件夹选择器；选择源目录后还会立即刷新自动筛选候选。
 void browseFolder(HWND window, int editId) {
     BROWSEINFOW bi{};
     bi.hwndOwner = window;
@@ -179,6 +187,7 @@ void browseFolder(HWND window, int editId) {
     }
 }
 
+// 打开 SBA 保存文件对话框，并把最终文件名写回 Archive 输入框。
 void browseFile(HWND window, int editId) {
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
@@ -194,6 +203,7 @@ void browseFile(HWND window, int editId) {
     }
 }
 
+// 根据一个输入路径填充备份、归档、还原目标，并联动扫描默认筛选项。
 void applySmartDefaults(HWND window) {
     // 用户只输入一个路径，推断模块一次性生成其余路径和推荐操作。
     const auto defaults = sbm::gui::inferSmartDefaults(getText(window, idSource));
@@ -398,6 +408,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                 setOutput(L"Enter a source path and use Auto Fill before starting Backup.");
                 return 0;
             }
+            // 只把用户实际选择的规则附加到命令行；“(none)”保持核心默认行为。
             std::wstring cmd = L"backup " + quote(source) + L" " + quote(backup) + L" --overwrite";
             const auto ext = getComboText(window, idExtCombo);
             const auto name = getComboText(window, idNameCombo);
@@ -471,6 +482,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 // 程序入口：注册窗口类、创建主窗口，然后进入标准 Win32 消息循环。
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int showCommand) {
     const wchar_t className[] = L"SimpleBackupManagerGui";
+    // 初始化组合框等通用控件，再注册本项目自己的主窗口类。
     INITCOMMONCONTROLSEX icc{};
     icc.dwSize = sizeof(icc);
     icc.dwICC = ICC_WIN95_CLASSES;

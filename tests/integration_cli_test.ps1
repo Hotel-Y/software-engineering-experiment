@@ -1,5 +1,5 @@
-# CLI integration suite: each numbered case exercises the compiled sbm.exe
-# across process, filesystem, manifest, archive, and restore boundaries.
+﻿# CLI 集成测试套件：每个编号用例都调用真实 sbm.exe，跨越进程、文件系统、清单、
+# 归档与还原边界验证结果，而不是直接调用 C++ 内部函数。
 param(
     [Parameter(Mandatory = $true)][string]$Executable
 )
@@ -9,6 +9,7 @@ if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction Sile
     $PSNativeCommandUseErrorActionPreference = $false
 }
 
+# 每次运行使用唯一临时目录，并集中保存通过数、失败详情及最近一次命令输出。
 $script:Executable = (Resolve-Path -LiteralPath $Executable).Path
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $suiteRoot = Join-Path ([IO.Path]::GetTempPath()) `
@@ -29,6 +30,7 @@ function Invoke-Sbm {
         [switch]$ExpectFailure
     )
 
+    # 统一捕获 stdout/stderr 与退出码；负向用例由 ExpectFailure 明确声明。
     $oldPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
@@ -65,6 +67,7 @@ function Assert-SameFile {
         [Parameter(Mandatory = $true)][string]$Expected,
         [Parameter(Mandatory = $true)][string]$Actual
     )
+    # 使用 SHA-256 对比完整内容，适用于文本、二进制和零字节文件。
     $expectedHash = (Get-FileHash -LiteralPath $Expected -Algorithm SHA256).Hash
     $actualHash = (Get-FileHash -LiteralPath $Actual -Algorithm SHA256).Hash
     Assert-True ($expectedHash -eq $actualHash) "File hashes differ: $Expected vs $Actual"
@@ -77,6 +80,7 @@ function Invoke-BroadCase {
         [Parameter(Mandatory = $true)][scriptblock]$Body
     )
 
+    # 每个用例在独立子目录执行；异常被记录后继续跑后续用例，最终一次性汇总。
     ++$script:Total
     $caseRoot = Join-Path $suiteRoot $Id
     New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
@@ -92,6 +96,7 @@ function Invoke-BroadCase {
     }
 }
 
+# ---- 基础路径与文件类型：BC-01～BC-07 -----------------------------------
 Invoke-BroadCase "BC-01" "reject a missing source directory" {
     param($caseRoot)
     Invoke-Sbm @("backup", (Join-Path $caseRoot "missing"), (Join-Path $caseRoot "backup")) -ExpectFailure
@@ -181,6 +186,7 @@ Invoke-BroadCase "BC-07" "round-trip many small files" {
     Assert-True (@(Get-ChildItem -LiteralPath $restore -File).Count -eq 120) "Many-file restore count mismatch"
 }
 
+# ---- 过滤规则与边界：BC-08～BC-15 ---------------------------------------
 Invoke-BroadCase "BC-08" "match extensions case-insensitively" {
     param($caseRoot)
     $source = Join-Path $caseRoot "source"
@@ -279,6 +285,7 @@ Invoke-BroadCase "BC-15" "filter files modified before a date" {
     Assert-True (!(Test-Path (Join-Path $backup "new.txt"))) "Modified-before included a new file"
 }
 
+# ---- 覆盖策略与目录位置：BC-16～BC-18 -----------------------------------
 Invoke-BroadCase "BC-16" "require overwrite for an existing backup" {
     param($caseRoot)
     $source = Join-Path $caseRoot "source"
@@ -312,6 +319,7 @@ Invoke-BroadCase "BC-18" "reject a backup destination inside the source" {
     Invoke-Sbm @("backup", $source, (Join-Path $source "nested-backup")) -ExpectFailure
 }
 
+# ---- 清单完整性与路径安全：BC-19～BC-23 ---------------------------------
 Invoke-BroadCase "BC-19" "detect a missing backup file" {
     param($caseRoot)
     $source = Join-Path $caseRoot "source"
@@ -364,6 +372,7 @@ Invoke-BroadCase "BC-23" "reject manifest path traversal" {
     Assert-True ((Get-Content -Raw -LiteralPath $outside) -match "unchanged") "Traversal modified an outside file"
 }
 
+# ---- 归档、加密及事务性失败：BC-24～BC-29 -------------------------------
 Invoke-BroadCase "BC-24" "round-trip a normal archive" {
     param($caseRoot)
     $source = Join-Path $caseRoot "source"
@@ -459,6 +468,7 @@ Invoke-BroadCase "BC-29" "reject a non-empty unpack destination without modifyin
     Assert-True ((Get-Content -Raw (Join-Path $output "keep.txt")) -match "keep") "Rejected unpack changed the destination"
 }
 
+# ---- 定时快照保留策略：BC-30 --------------------------------------------
 Invoke-BroadCase "BC-30" "retain only the requested scheduled snapshots" {
     param($caseRoot)
     $source = Join-Path $caseRoot "source"

@@ -1,3 +1,4 @@
+﻿# 压力与性能套件：八个用例覆盖文件数量、体积、目录深度、并发、定时和加密耐久性。
 param(
     [Parameter(Mandatory = $true)]
     [string]$Executable,
@@ -26,6 +27,7 @@ if ([string]::IsNullOrWhiteSpace($WorkRoot)) {
 New-Item -ItemType Directory -Force -Path $WorkRoot | Out-Null
 $WorkRoot = (Resolve-Path -LiteralPath $WorkRoot).Path
 
+# Quick 用于日常回归，Full 显著提高数据量与循环次数；两者共用同一套断言。
 $settings = if ($Profile -eq "Full") {
     [PSCustomObject]@{
         SmallFiles = 20000
@@ -57,6 +59,7 @@ else {
     }
 }
 
+# 在生成大文件前检查磁盘余量，避免测试把用户磁盘写满。
 $driveName = ([IO.Path]::GetPathRoot($WorkRoot)).TrimEnd('\')
 $drive = [IO.DriveInfo]::new($driveName)
 if ($drive.AvailableFreeSpace -lt $settings.RequiredFreeBytes) {
@@ -84,6 +87,7 @@ function Assert-True {
 function Invoke-Sbm {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
+    # 所有压力用例通过此入口调用核心程序，并保存最近一次输出供失败诊断。
     $oldPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
@@ -107,6 +111,7 @@ function Write-LargeFile {
         [switch]$Random
     )
 
+    # 固定 1 MiB 缓冲区流式生成可压缩 A 数据或密码学随机数据，内存占用保持稳定。
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
     $bufferSize = 1MB
     $buffer = New-Object byte[] $bufferSize
@@ -145,6 +150,7 @@ function Assert-FileHashEqual {
         [Parameter(Mandatory = $true)][string]$Expected,
         [Parameter(Mandatory = $true)][string]$Actual
     )
+    # 先确认目标存在，再用 SHA-256 比较内容，避免缺失文件只表现为哈希命令异常。
     Assert-True (Test-Path -LiteralPath $Actual -PathType Leaf) "Missing restored file: $Actual"
     $expectedHash = (Get-FileHash -LiteralPath $Expected -Algorithm SHA256).Hash
     $actualHash = (Get-FileHash -LiteralPath $Actual -Algorithm SHA256).Hash
@@ -157,6 +163,7 @@ function Assert-TreesEqual {
         [Parameter(Mandatory = $true)][string]$ActualRoot
     )
 
+    # 先比较文件总数，再按相对路径逐一比较哈希，验证完整目录树往返。
     $expectedFiles = @(Get-ChildItem -LiteralPath $ExpectedRoot -File -Recurse)
     $actualFiles = @(Get-ChildItem -LiteralPath $ActualRoot -File -Recurse)
     Assert-True ($expectedFiles.Count -eq $actualFiles.Count) `
@@ -176,6 +183,7 @@ function Invoke-StressCase {
         [Parameter(Mandatory = $true)][scriptblock]$Body
     )
 
+    # Cases 非空时只运行指定编号；每项单独计时并保存结构化结果。
     if ($Cases.Count -gt 0 -and $Id -notin $Cases) {
         return
     }
@@ -218,6 +226,7 @@ Write-Host "Profile: $Profile"
 Write-Host "Workspace: $suiteRoot"
 Write-Host ""
 
+# ST-01：大量小文件考察目录遍历、清单规模以及逐文件还原能力。
 Invoke-StressCase "ST-01" "many-small-files backup and restore" {
     param($caseRoot)
     $source = Join-Path $caseRoot "source"
@@ -240,6 +249,7 @@ Invoke-StressCase "ST-01" "many-small-files backup and restore" {
     "files=$($settings.SmallFiles)"
 }
 
+# ST-02～ST-03：分别使用高重复与随机大文件，覆盖压缩和 raw-store/加密路径。
 Invoke-StressCase "ST-02" "large compressible archive round-trip" {
     param($caseRoot)
     $source = Join-Path $caseRoot "source"
@@ -278,6 +288,7 @@ Invoke-StressCase "ST-03" "encrypted random-data archive round-trip" {
     "inputMiB=$($settings.RandomMiB);archiveBytes=$((Get-Item $archive).Length)"
 }
 
+# ST-04：构造深层目录树，同时把每段名称控制得较短以免测试夹具先触发旧 MAX_PATH。
 Invoke-StressCase "ST-04" "deep-directory round-trip" {
     param($caseRoot)
     $source = Join-Path $caseRoot "source"
@@ -287,8 +298,7 @@ Invoke-StressCase "ST-04" "deep-directory round-trip" {
     New-Item -ItemType Directory -Path $current | Out-Null
 
     for ($level = 1; $level -le $settings.Depth; ++$level) {
-        # Keep each segment intentionally short so 50 levels exercise depth
-        # without the test fixture itself exceeding the legacy MAX_PATH limit.
+        # 每段故意只用一个字符，使 50 层测试真正关注深度，而不是先超过旧 MAX_PATH。
         $current = Join-Path $current "d"
         New-Item -ItemType Directory -Path $current | Out-Null
         [IO.File]::WriteAllText((Join-Path $current "level.txt"), "depth-$level")
@@ -301,6 +311,7 @@ Invoke-StressCase "ST-04" "deep-directory round-trip" {
     "depth=$($settings.Depth)"
 }
 
+# ST-05～ST-06：验证连续覆盖的稳定性，以及多个独立备份进程并发运行的隔离性。
 Invoke-StressCase "ST-05" "repeated overwrite and verification" {
     param($caseRoot)
     $source = Join-Path $caseRoot "source"
@@ -376,6 +387,7 @@ Invoke-StressCase "ST-06" "concurrent independent backups" {
     "jobs=$($settings.ConcurrentJobs);filesPerJob=$($settings.ConcurrentFiles);maxPeakWorkingSetBytes=$peakBytes"
 }
 
+# ST-07～ST-08：在负载下验证快照保留数量，并重复执行加密端到端耐久循环。
 Invoke-StressCase "ST-07" "scheduled snapshot retention under load" {
     param($caseRoot)
     $source = Join-Path $caseRoot "source"
@@ -420,6 +432,7 @@ Invoke-StressCase "ST-08" "repeated encrypted end-to-end soak" {
     "cycles=$($settings.SoakCycles);payloadMiB=4"
 }
 
+# 每次运行把耗时与详情保存为 CSV/JSON，便于比较 Quick/Full 的历史性能。
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $csvPath = Join-Path $resultsRoot "stress_${Profile}_$timestamp.csv"
 $jsonPath = Join-Path $resultsRoot "stress_${Profile}_$timestamp.json"
@@ -436,6 +449,7 @@ if ($script:Failures.Count -gt 0) {
     exit 1
 }
 
+# 清理前再次确认目录位于指定 WorkRoot 且名称符合前缀，防止误删其他路径。
 if ($KeepWork) {
     Write-Host "Workspace kept at: $suiteRoot"
 }

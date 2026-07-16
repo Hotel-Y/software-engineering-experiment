@@ -15,6 +15,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Install OpenSSL development package
+        shell: pwsh
+        run: .\setup_openssl.ps1
+
       - name: Build sbm.exe
         shell: pwsh
         run: .\build.ps1

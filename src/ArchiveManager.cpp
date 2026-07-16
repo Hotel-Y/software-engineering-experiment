@@ -17,25 +17,25 @@
 #include <vector>
 
 namespace {
+// SBA5 文件头用于在解包前快速确认格式与版本；其后的条目均使用固定宽度元数据。
 constexpr std::array<char, 8> archiveMagic = {'S', 'B', 'A', '5', '\r', '\n', '\0', '\1'};
 constexpr const char* manifestName = "manifest.sbm";
-constexpr std::uint64_t flagCompressed = 1;  // payload is LZ+Huffman compressed, block-wise
-constexpr std::uint64_t flagEncrypted = 2;
+constexpr std::uint64_t flagCompressed = 1;  // 文件载荷按块经过 LZ77 + Huffman 压缩。
+constexpr std::uint64_t flagEncrypted = 2;   // 文件载荷按块经过 AES-256-GCM 加密。
 constexpr std::size_t saltSize = 16;
 constexpr std::size_t ivSize = 12;
 constexpr std::size_t tagSize = 16;
 constexpr std::size_t keySize = 32;
 constexpr int pbkdf2Iterations = 100000;
-// Each file is compressed in fixed-size source blocks. Keeping the block bounded
-// (rather than reading the whole file into one vector) is what fixes the peak-memory
-// blowup on multi-gigabyte inputs: at any moment we only hold one block's worth of
-// data plus its LZ/Huffman buffers, independent of the total file size.
-constexpr std::size_t blockSize = 1u << 20;  // 1 MiB of source per block
+// 每个文件按固定源数据块处理，而不是一次读入整个文件。无论文件有多大，内存中最多
+// 只保留一个原始块及其 LZ/Huffman 中间结果，因此峰值内存与文件总大小无关。
+constexpr std::size_t blockSize = 1u << 20;  // 每块 1 MiB 原始数据。
 constexpr std::uint64_t maxLzStreamSize = blockSize + blockSize / 8 + 8;
 constexpr std::uint64_t maxArchivePathBytes = 1u << 20;
-// Per-block flags (first byte of each block record in the payload).
-constexpr unsigned char blockFlagRawStored = 1;  // block payload is raw original bytes, not huffman(lz)
+// 每个块记录的首字节是块标志；置位表示直接存原始字节，不执行 Huffman(LZ) 还原。
+constexpr unsigned char blockFlagRawStored = 1;
 
+// 归档模块内部再做一遍规范化路径包含判断，不信任归档内携带的路径字符串。
 bool archivePathSameOrInside(const std::filesystem::path& child,
                              const std::filesystem::path& parent) {
     const auto absoluteChild = std::filesystem::weakly_canonical(child);
@@ -51,8 +51,10 @@ bool archivePathSameOrInside(const std::filesystem::path& child,
     return true;
 }
 
+// 把归档相对路径解析到指定根目录内，任何绝对路径或“..”都被拒绝。
 std::filesystem::path resolveArchivePathInside(const std::filesystem::path& root,
                                                const std::string& relativePath) {
+    // 语法检查加规范化后检查共同阻止 Zip Slip 类的目录穿越写入。
     const auto relative = pathFromUtf8(relativePath).lexically_normal();
     if (relative.empty() || relative == "." || relative.is_absolute()
         || relative.has_root_name() || relative.has_root_directory()) {
@@ -74,6 +76,7 @@ std::filesystem::path resolveArchivePathInside(const std::filesystem::path& root
     return candidate;
 }
 
+// 递归创建目录并把 error_code 转换成带路径信息的统一异常。
 void ensureDirectory(const std::filesystem::path& path) {
     std::error_code ec;
     std::filesystem::create_directories(path, ec);
@@ -83,12 +86,14 @@ void ensureDirectory(const std::filesystem::path& path) {
 }
 
 void writeUint64(std::ostream& output, std::uint64_t value) {
+    // SBA5 当前面向本项目的 Windows/MinGW 环境，整数按主机小端序固定写 8 字节。
     output.write(reinterpret_cast<const char*>(&value), sizeof(value));
     if (!output) {
         throw std::runtime_error("Failed to write archive data.");
     }
 }
 
+// 与 writeUint64 成对读取固定 8 字节，截断时立刻报告归档损坏。
 std::uint64_t readUint64(std::istream& input) {
     std::uint64_t value = 0;
     input.read(reinterpret_cast<char*>(&value), sizeof(value));
@@ -98,32 +103,26 @@ std::uint64_t readUint64(std::istream& input) {
     return value;
 }
 
-// ---- LZ stage ------------------------------------------------------------
-// LZ77 with a hash-chain match finder over a sliding window. Unlike the old RLE
-// stage (which only collapsed runs of identical bytes and therefore *expanded*
-// ordinary data ~2x), LZ77 exploits repeated byte *sequences*, so its token stream
-// has real redundancy for the Huffman stage to remove. The window and the hash
-// tables are bounded, so memory stays flat regardless of input size.
+// ---- LZ77 阶段 ------------------------------------------------------------
+// 使用滑动窗口和哈希链寻找重复序列。旧 RLE 只能压缩连续相同字节，普通数据反而可能
+// 接近翻倍；LZ77 能引用较早出现的完整字节序列，再交给 Huffman 消除符号冗余。
+// 窗口与哈希表都有上限，因此内存不会随输入增长。
 //
-// The token stream is byte-oriented so the existing byte-level Huffman stage works
-// unchanged. Layout:
-//   repeat: 1 flag byte, then up to 8 tokens
-//     flag bit = 1 -> literal: next 1 byte is a literal
-//     flag bit = 0 -> match : next 3 bytes = offsetLo, offsetHi, lengthCode
-//                              offset 1..65535, length = lengthCode + minMatch
-// Trailing unused flag bits are never read: the decoder stops as soon as it has
-// produced the block's original size.
+// LZ 令牌流保持字节格式，便于后续直接做字节级 Huffman：每组先写 1 字节标志，随后
+// 最多写 8 个令牌。标志位为 1 时下一个字节是原文字面量；为 0 时接下来 3 字节记录
+// “低位偏移、高位偏移、长度码”。解码器生成预期原始大小后停止，不读取末尾闲置标志位。
 namespace lz {
-constexpr std::uint32_t windowBits = 15;              // sliding window = 32768
+constexpr std::uint32_t windowBits = 15;              // 滑动窗口大小为 32768 字节。
 constexpr std::uint32_t windowSize = 1u << windowBits;
 constexpr std::uint32_t windowMask = windowSize - 1;
-constexpr std::uint32_t minMatch = 4;                 // a match token costs 3 bytes, so >= 4 pays
-constexpr std::uint32_t maxMatch = minMatch + 255;    // length byte range -> 4..259
-constexpr std::uint32_t goodMatch = 32;              // accept a match this long without searching further
-constexpr std::uint32_t maxChain = 128;              // cap hash-chain walks per position
+constexpr std::uint32_t minMatch = 4;                 // 匹配令牌占 3 字节，至少匹配 4 字节才划算。
+constexpr std::uint32_t maxMatch = minMatch + 255;    // 单字节长度码可表示 4～259。
+constexpr std::uint32_t goodMatch = 32;               // 找到 32 字节匹配即可提前停止搜索。
+constexpr std::uint32_t maxChain = 128;               // 每个位置最多沿哈希链比较 128 次。
 constexpr std::uint32_t hashBits = 15;
 constexpr std::uint32_t hashSize = 1u << hashBits;
 
+// 把连续四字节映射到固定大小的哈希桶，用于快速找到候选重复序列。
 inline std::uint32_t hash4(const unsigned char* p) {
     const std::uint32_t v = (static_cast<std::uint32_t>(p[0]) << 24)
                           | (static_cast<std::uint32_t>(p[1]) << 16)
@@ -131,8 +130,9 @@ inline std::uint32_t hash4(const unsigned char* p) {
                           |  static_cast<std::uint32_t>(p[3]);
     return (v * 2654435761u) >> (32 - hashBits);
 }
-}  // namespace lz
+}  // 命名空间 lz
 
+// 把一个原始数据块编码为“字面量/回溯匹配”令牌流。
 std::vector<unsigned char> lzCompress(const unsigned char* data, std::size_t n) {
     std::vector<unsigned char> output;
     output.reserve(n / 2 + 64);
@@ -144,7 +144,7 @@ std::vector<unsigned char> lzCompress(const unsigned char* data, std::size_t n) 
 
     unsigned char flag = 0;
     int flagBits = 0;
-    unsigned char buf[24];  // up to 8 match tokens * 3 bytes
+    unsigned char buf[24];  // 一组最多 8 个匹配令牌，每个 3 字节。
     int bufLen = 0;
     const auto flush = [&]() {
         if (flagBits == 0) return;
@@ -215,6 +215,7 @@ std::vector<unsigned char> lzCompress(const unsigned char* data, std::size_t n) 
     return output;
 }
 
+// 按标志位逐令牌还原 LZ 数据，并严格验证输出大小、偏移和输入消费量。
 std::vector<unsigned char> lzDecompress(const std::vector<unsigned char>& input,
                                          std::size_t expectedSize) {
     std::vector<unsigned char> output;
@@ -244,7 +245,8 @@ std::vector<unsigned char> lzDecompress(const std::vector<unsigned char>& input,
                 }
                 const std::size_t src = output.size() - offset;
                 for (std::uint32_t k = 0; k < length; ++k) {
-                    output.push_back(output[src + k]);  // overlapping copy is fine, byte-by-byte
+                    // 逐字节复制允许源区与目标区重叠，这是 LZ 重复扩展的正常情况。
+                    output.push_back(output[src + k]);
                 }
             }
         }
@@ -258,15 +260,12 @@ std::vector<unsigned char> lzDecompress(const std::vector<unsigned char>& input,
     return output;
 }
 
-// ---- Huffman stage --------------------------------------------------------
-// A Huffman payload is laid out as:
-//   [256 bytes code-lengths][8-byte symbol count, little-endian]
-//   [packed bitstream, MSB-first, final byte zero-padded]
-// code-lengths[i] is the bit length of symbol i's canonical Huffman code (0 means
-// the symbol is absent from the input). The embedded symbol count makes the payload
-// self-contained, so the LZ->Huffman pipeline can decode this stage without an
-// external size (the outer LZ stage then uses the block's original size to verify).
+// ---- Huffman 阶段 ---------------------------------------------------------
+// Huffman 载荷结构为：[256 字节码长表][8 字节符号数][高位优先的压缩位流]。
+// 码长表第 i 项表示符号 i 的规范 Huffman 码长度，0 表示未出现；末字节空位补 0。
+// 内嵌符号数使本阶段能独立停止解码，外层再用数据块原始大小验证 LZ 输出。
 
+// 按频率构建 Huffman 树，只持久化每个符号的码长，以便生成确定性的规范码。
 std::array<unsigned char, 256> huffmanCodeLengths(const std::vector<unsigned char>& input) {
     std::array<std::uint64_t, 256> freq{};
     for (const auto byte : input) {
@@ -276,7 +275,7 @@ std::array<unsigned char, 256> huffmanCodeLengths(const std::vector<unsigned cha
 
     struct Node {
         std::uint64_t freq;
-        int symbol;  // >=0 for a leaf, -1 for an internal node
+        int symbol;  // 大于等于 0 是叶子符号，-1 是内部节点。
         int left;
         int right;
     };
@@ -285,7 +284,7 @@ std::array<unsigned char, 256> huffmanCodeLengths(const std::vector<unsigned cha
         if (nodes[a].freq != nodes[b].freq) {
             return nodes[a].freq > nodes[b].freq;
         }
-        return nodes[a].symbol > nodes[b].symbol;  // deterministic tie-break
+        return nodes[a].symbol > nodes[b].symbol;  // 频率相同时按符号排序，保证结果可复现。
     };
     std::priority_queue<int, std::vector<int>, decltype(greater)> queue(greater);
     for (int s = 0; s < 256; ++s) {
@@ -295,10 +294,10 @@ std::array<unsigned char, 256> huffmanCodeLengths(const std::vector<unsigned cha
         }
     }
     if (nodes.empty()) {
-        return lengths;  // empty input: all-zero codebook
+        return lengths;  // 空输入对应全零码长表。
     }
     if (nodes.size() == 1) {
-        // a single distinct symbol still needs a 1-bit code to be decodable
+        // 只有一种符号时也分配 1 位码，否则无法在位流中表示重复次数。
         lengths[nodes[0].symbol] = 1;
         return lengths;
     }
@@ -313,7 +312,7 @@ std::array<unsigned char, 256> huffmanCodeLengths(const std::vector<unsigned cha
     const int root = queue.top();
     queue.pop();
 
-    // iterative DFS assigns code lengths (= tree depth); avoids deep recursion
+    // 迭代式深度优先遍历用树深作为码长，避免递归调用栈过深。
     std::vector<std::pair<int, int>> stack;
     stack.push_back({root, 0});
     while (!stack.empty()) {
@@ -333,13 +332,14 @@ std::array<unsigned char, 256> huffmanCodeLengths(const std::vector<unsigned cha
     return lengths;
 }
 
+// 使用规范码压缩 LZ 令牌流；相同输入会得到确定且可跨实现重建的码表。
 std::vector<unsigned char> huffmanCompress(const std::vector<unsigned char>& input) {
     if (input.empty()) {
-        return {};  // decoder reconstructs an empty payload from expectedSize == 0
+        return {};  // 空输入直接对应空载荷。
     }
     const auto lengths = huffmanCodeLengths(input);
 
-    // canonical Huffman codes from the lengths (sorted by length, then symbol)
+    // 先按码长、再按符号排序，从码长表生成唯一的规范 Huffman 码。
     std::vector<int> symbols;
     symbols.reserve(256);
     for (int s = 0; s < 256; ++s) {
@@ -363,7 +363,7 @@ std::vector<unsigned char> huffmanCompress(const std::vector<unsigned char>& inp
         previousLength = length;
     }
 
-    // codebook (256 length bytes), then 8-byte symbol count, then the packed bitstream
+    // 输出依次写入 256 字节码长表、8 字节符号数和按位打包的数据。
     std::vector<unsigned char> output(256);
     for (int s = 0; s < 256; ++s) {
         output[s] = lengths[s];
@@ -392,9 +392,10 @@ std::vector<unsigned char> huffmanCompress(const std::vector<unsigned char>& inp
     return output;
 }
 
+// 从码长表重建前缀树，按载荷头声明的符号数停止输出。
 std::vector<unsigned char> huffmanDecompress(const std::vector<unsigned char>& input) {
     if (input.empty()) {
-        return {};  // empty payload -> empty original
+        return {};  // 空载荷还原为空输入。
     }
     if (input.size() < 256 + 8) {
         throw std::runtime_error("Broken Huffman payload.");
@@ -403,7 +404,7 @@ std::vector<unsigned char> huffmanDecompress(const std::vector<unsigned char>& i
     for (int i = 0; i < 256; ++i) {
         lengths[i] = input[i];
     }
-    std::uint64_t expectedSize = 0;  // symbol count embedded in the payload
+    std::uint64_t expectedSize = 0;  // 从载荷头读取应输出的符号总数。
     for (int i = 0; i < 8; ++i) {
         expectedSize |= static_cast<std::uint64_t>(input[256 + i]) << (8 * i);
     }
@@ -414,7 +415,7 @@ std::vector<unsigned char> huffmanDecompress(const std::vector<unsigned char>& i
         throw std::runtime_error("Huffman output exceeds the supported block size.");
     }
 
-    // rebuild the canonical codes (same assignment as the encoder) into a trie
+    // 按编码器相同规则重建规范码，并插入二叉前缀树供逐位解码。
     std::vector<int> symbols;
     symbols.reserve(256);
     for (int s = 0; s < 256; ++s) {
@@ -501,6 +502,7 @@ std::vector<unsigned char> huffmanDecompress(const std::vector<unsigned char>& i
 
 template <std::size_t N>
 std::array<unsigned char, N> randomBytes() {
+    // 盐和 IV 必须来自密码学安全随机源，不能使用普通伪随机数生成器。
     std::array<unsigned char, N> bytes{};
     if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1) {
         throw std::runtime_error("OpenSSL failed to generate random bytes.");
@@ -511,6 +513,7 @@ std::array<unsigned char, N> randomBytes() {
 std::array<unsigned char, keySize> deriveKey(
     const std::string& password,
     const std::array<unsigned char, saltSize>& salt) {
+    // PBKDF2-HMAC-SHA256 将任意长度密码和每文件随机盐扩展成 256 位密钥。
     std::array<unsigned char, keySize> key{};
     if (PKCS5_PBKDF2_HMAC(password.c_str(), static_cast<int>(password.size()),
                           salt.data(), static_cast<int>(salt.size()),
@@ -526,6 +529,7 @@ std::vector<unsigned char> encryptAesGcm(
     const std::array<unsigned char, keySize>& key,
     const std::array<unsigned char, ivSize>& iv,
     std::array<unsigned char, tagSize>& tag) {
+    // GCM 在生成密文的同时生成认证标签，解包时可发现错密码或任意内容篡改。
     EVP_CIPHER_CTX* context = EVP_CIPHER_CTX_new();
     if (!context) {
         throw std::runtime_error("OpenSSL failed to create encryption context.");
@@ -556,6 +560,7 @@ std::vector<unsigned char> decryptAesGcm(
     const std::array<unsigned char, keySize>& key,
     const std::array<unsigned char, ivSize>& iv,
     const std::array<unsigned char, tagSize>& tag) {
+    // 只有 EVP_DecryptFinal_ex 成功验证标签后，明文才被视为可信。
     EVP_CIPHER_CTX* context = EVP_CIPHER_CTX_new();
     if (!context) {
         throw std::runtime_error("OpenSSL failed to create decryption context.");
@@ -586,6 +591,7 @@ std::vector<unsigned char> decryptAesGcm(
 
 template <std::size_t N>
 void writeArray(std::ostream& output, const std::array<unsigned char, N>& bytes) {
+    // 定长数组用于盐、IV 和标签，读写函数保持元数据布局完全对称。
     output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     if (!output) {
         throw std::runtime_error("Failed to write archive cryptographic metadata.");
@@ -594,6 +600,7 @@ void writeArray(std::ostream& output, const std::array<unsigned char, N>& bytes)
 
 template <std::size_t N>
 std::array<unsigned char, N> readArray(std::istream& input) {
+    // 读取固定长度的密码学元数据，短读即视作归档截断。
     std::array<unsigned char, N> bytes{};
     input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     if (!input) {
@@ -603,6 +610,7 @@ std::array<unsigned char, N> readArray(std::istream& input) {
 }
 
 std::vector<unsigned char> readPayload(std::istream& input, std::uint64_t bytes) {
+    // 在分配内存前限制长度，防止损坏归档声明超大块导致内存耗尽。
     if (bytes > blockSize) {
         throw std::runtime_error("Archive block payload exceeds the supported size.");
     }
@@ -618,10 +626,13 @@ std::vector<unsigned char> readPayload(std::istream& input, std::uint64_t bytes)
 
 }
 
+// 保存密码选项；密钥只在实际处理加密文件时派生，不长期存储。
 ArchiveManager::ArchiveManager(ArchiveOptions options) : options_(std::move(options)) {}
 
+// Pack 总流程：校验清单 -> 写条目元数据 -> 分块压缩/加密 -> 回填载荷长度。
 ArchiveStats ArchiveManager::pack(const std::filesystem::path& backupDir,
                                   const std::filesystem::path& archiveFile) const {
+    // 打包前完整验证备份清单，保证归档不会固化已经缺失或被修改的文件。
     const auto manifestFile = backupDir / manifestName;
     const auto manifest = Manifest::load(manifestFile);
 
@@ -657,6 +668,7 @@ ArchiveStats ArchiveManager::pack(const std::filesystem::path& backupDir,
         throw std::runtime_error("Cannot create archive: " + pathToUtf8(archiveFile));
     }
 
+    // 文件级结构：魔数、条目数，随后按清单顺序写每个目录或文件条目。
     output.write(archiveMagic.data(), static_cast<std::streamsize>(archiveMagic.size()));
     writeUint64(output, static_cast<std::uint64_t>(manifest.entries().size()));
 
@@ -680,16 +692,14 @@ ArchiveStats ArchiveManager::pack(const std::filesystem::path& backupDir,
         }
         writeUint64(output, flags);
         const std::streamoff sizePos = output.tellp();
-        writeUint64(output, 0);  // placeholder payloadSize, patched after streaming the blocks
-        writeArray(output, salt);  // per-file salt (zeros when not encrypted); iv/tag are per block
+        writeUint64(output, 0);  // 先占位，文件所有数据块写完后回填载荷总长度。
+        writeArray(output, salt);  // 每文件一个盐；未加密时全零，IV 和标签则每块独立。
 
         if (entry.isDirectory) {
-            continue;  // payloadSize stays 0
+            continue;  // 目录无载荷，占位长度保持为 0。
         }
 
-        // Stream the file block-by-block so memory stays bounded on multi-gigabyte
-        // inputs (problem 4 fix): we never hold the whole file, its LZ expansion, or
-        // an assembled compressed copy in memory -- only one block at a time.
+        // 文件按块流式读取：不在内存中保存完整文件、完整 LZ 结果或完整压缩副本。
         const auto srcPath = resolveArchivePathInside(backupDir, entry.relativePath);
         std::ifstream in(srcPath, std::ios::binary);
         if (!in) {
@@ -697,7 +707,7 @@ ArchiveStats ArchiveManager::pack(const std::filesystem::path& backupDir,
         }
         std::array<unsigned char, keySize> key{};
         if (encrypted) {
-            key = deriveKey(options_.password, salt);  // PBKDF2 once per file, not per block
+            key = deriveKey(options_.password, salt);  // PBKDF2 每文件计算一次，而非每块一次。
         }
 
         std::vector<unsigned char> block(blockSize);
@@ -709,16 +719,15 @@ ArchiveStats ArchiveManager::pack(const std::filesystem::path& backupDir,
             if (got == 0) break;
             auto lzStream = lzCompress(block.data(), got);
             auto huff = huffmanCompress(lzStream);
-            // raw-store bypass: if compression doesn't beat the original (true for random /
-            // already-compressed / tiny tail blocks), store the raw bytes instead. This keeps
-            // the archive from ever expanding any block beyond its original size.
+            // 随机数据、已压缩数据或很小的尾块若压缩后不更小，就直接保存原始块，
+            // 避免压缩元数据让归档中的块比原数据明显膨胀。
             const bool rawStored = huff.size() >= got;
             const unsigned char blockFlags = rawStored ? blockFlagRawStored : 0;
-            // payload we actually store (pre-encryption): raw block bytes, or the Huffman stream
+            // 加密前实际载荷二选一：原始块字节，或 Huffman 编码后的 LZ 令牌流。
             const std::vector<unsigned char> toStore =
                 rawStored ? std::vector<unsigned char>(block.begin(), block.begin() + got) : huff;
             output.put(static_cast<char>(blockFlags));
-            writeUint64(output, static_cast<std::uint64_t>(got));       // block original size
+            writeUint64(output, static_cast<std::uint64_t>(got));  // 原始块长度用于解码终止和验证。
             if (encrypted) {
                 auto iv = randomBytes<ivSize>();
                 std::array<unsigned char, tagSize> tag{};
@@ -739,11 +748,11 @@ ArchiveStats ArchiveManager::pack(const std::filesystem::path& backupDir,
                 }
                 payloadBytes += 1 + 8 + 8 + toStore.size();
             }
-            if (got < block.size()) break;  // last (partial) block
+            if (got < block.size()) break;  // 读到不足 1 MiB 的最后一个块。
         }
         in.close();
 
-        // patch the placeholder payloadSize with the real total
+        // 回到条目头部，把流式写入后才能确定的载荷总长度填回占位位置。
         const std::streamoff endPos = output.tellp();
         output.seekp(sizePos);
         writeUint64(output, payloadBytes);
@@ -760,6 +769,7 @@ ArchiveStats ArchiveManager::pack(const std::filesystem::path& backupDir,
     return stats;
 }
 
+// Unpack 总流程：检查文件头 -> 解析并解码各块 -> 校验 -> 原子提交临时目录。
 ArchiveStats ArchiveManager::unpack(const std::filesystem::path& archiveFile,
                                     const std::filesystem::path& outputDir) const {
     std::ifstream input(archiveFile, std::ios::binary);
@@ -767,6 +777,7 @@ ArchiveStats ArchiveManager::unpack(const std::filesystem::path& archiveFile,
         throw std::runtime_error("Cannot open archive: " + pathToUtf8(archiveFile));
     }
 
+    // 解包第一步检查 SBA5 文件头，拒绝其他版本、普通文件和明显截断的归档。
     std::array<char, 8> magic{};
     input.read(magic.data(), static_cast<std::streamsize>(magic.size()));
     if (magic != archiveMagic) {
@@ -782,6 +793,7 @@ ArchiveStats ArchiveManager::unpack(const std::filesystem::path& archiveFile,
         ensureDirectory(outputDir.parent_path());
     }
 
+    // 所有内容先写入同级临时目录；只有完整校验通过后才原子重命名为目标目录。
     std::filesystem::path stagingDir;
     for (int attempt = 0; attempt < 1000; ++attempt) {
         stagingDir = outputDir;
@@ -802,6 +814,7 @@ ArchiveStats ArchiveManager::unpack(const std::filesystem::path& archiveFile,
         std::unordered_set<std::string> archivePaths;
         const auto archiveBytes = std::filesystem::file_size(archiveFile);
         const auto entryCount = readUint64(input);
+        // 用归档总大小约束条目数，避免伪造数量造成超长循环或资源耗尽。
         constexpr std::uint64_t minimumEntryBytes = 1 + 8 + 1 + 5 * 8 + saltSize;
         if (entryCount > archiveBytes / minimumEntryBytes) {
             throw std::runtime_error("Archive entry count is not credible for this file size.");
@@ -813,6 +826,7 @@ ArchiveStats ArchiveManager::unpack(const std::filesystem::path& archiveFile,
                 throw std::runtime_error("Broken archive entry type.");
             }
 
+            // 每条路径都检查长度、唯一性和根目录包含关系。
             const auto pathLength = readUint64(input);
             if (pathLength == 0 || pathLength > maxArchivePathBytes
                 || pathLength > archiveBytes) {
@@ -865,6 +879,7 @@ ArchiveStats ArchiveManager::unpack(const std::filesystem::path& archiveFile,
                 throw std::runtime_error("Cannot write file: " + pathToUtf8(outputPath));
             }
 
+            // remaining 精确约束本条目可消费的字节数，防止块越界读入下一条目。
             std::uint64_t remaining = payloadSize;
             std::uintmax_t produced = 0;
             while (remaining > 0) {
@@ -902,6 +917,7 @@ ArchiveStats ArchiveManager::unpack(const std::filesystem::path& archiveFile,
                 auto blockPayload = readPayload(input, storedSize);
                 remaining -= storedSize;
                 if (encrypted) {
+                    // 先验证 GCM 标签再解压，损坏或错密码不会产生被信任的输出块。
                     blockPayload = decryptAesGcm(blockPayload, key, iv, tag);
                 }
 
@@ -928,6 +944,7 @@ ArchiveStats ArchiveManager::unpack(const std::filesystem::path& archiveFile,
                 throw std::runtime_error("Unpacked file size mismatch: " + pathToUtf8(outputPath));
             }
 
+            // 解码后的最终大小与校验值还要再次匹配清单，形成端到端完整性检查。
             const auto checksum = fnv1aFileChecksum(outputPath);
             if (checksum != entry.checksum) {
                 throw std::runtime_error("Unpacked file checksum mismatch: " + pathToUtf8(outputPath));
@@ -939,6 +956,7 @@ ArchiveStats ArchiveManager::unpack(const std::filesystem::path& archiveFile,
             stats.storedBytes += payloadSize;
         }
 
+        // 声明条目全部处理后必须正好到文件末尾，尾随数据也视为格式损坏。
         if (input.peek() != std::char_traits<char>::eof()) {
             throw std::runtime_error("Archive contains trailing data.");
         }
@@ -951,6 +969,7 @@ ArchiveStats ArchiveManager::unpack(const std::filesystem::path& archiveFile,
                 throw std::runtime_error("Cannot replace the empty unpack output directory.");
             }
         }
+        // 临时目录整体改名完成提交，用户不会看到“只解出一半”的目标目录。
         std::filesystem::rename(stagingDir, outputDir, ec);
         if (ec) {
             if (outputExisted) {
@@ -960,6 +979,7 @@ ArchiveStats ArchiveManager::unpack(const std::filesystem::path& archiveFile,
         }
         return stats;
     } catch (...) {
+        // 任一格式、认证、解码或写入错误都清理临时目录，再保留原异常交给 CLI。
         std::error_code cleanupError;
         std::filesystem::remove_all(stagingDir, cleanupError);
         throw;

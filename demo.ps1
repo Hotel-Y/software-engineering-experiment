@@ -1,8 +1,10 @@
+﻿# 端到端演示脚本：自动构造小型工作区，串联过滤备份、校验、加密归档和定时快照。
 $ErrorActionPreference = "Stop"
 if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
     $PSNativeCommandUseErrorActionPreference = $true
 }
 
+# 演示始终先重新构建，避免展示到旧版本程序。
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 & (Join-Path $root "build.ps1")
 
@@ -19,6 +21,7 @@ $unpacked = Join-Path $demo "unpacked_backup"
 $restore = Join-Path $demo "restore"
 $snapshots = Join-Path $demo "snapshots"
 
+# 同时准备可压缩文本、源码、空目录和会被扩展名过滤掉的文件。
 New-Item -ItemType Directory -Force -Path (Join-Path $source "docs"), (Join-Path $source "src"), (Join-Path $source "empty") | Out-Null
 Set-Content -LiteralPath (Join-Path $source "docs\report.txt") -Value "software backup report" -Encoding UTF8
 Set-Content -LiteralPath (Join-Path $source "docs\repeat.txt") -Value ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") -Encoding UTF8
@@ -35,6 +38,7 @@ Write-Host "3. Pack with LZ77 + Huffman compression and OpenSSL AES-256-GCM encr
 & $exe pack $backup $archive --password=secret123
 
 Write-Host "4. Wrong password should fail"
+# 临时允许外部命令失败，以便明确断言“错密码必须失败”而不是终止整个演示。
 $oldPreference = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 & $exe unpack $archive (Join-Path $demo "wrong_password") --password=wrong 2>$null

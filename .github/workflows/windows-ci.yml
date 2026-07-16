@@ -1,5 +1,6 @@
 name: Windows CI
 
+# develop 和 master 的直接提交、拉取请求都必须经过 Windows 构建检查。
 on:
   push:
     branches: [master, develop]
@@ -8,10 +9,12 @@ on:
 
 jobs:
   build-and-test:
+    # 项目依赖 Win32 API，因此使用 GitHub 托管的 Windows 环境。
     runs-on: windows-latest
     timeout-minutes: 15
 
     steps:
+      # 先取得完整源码，再准备固定版本的依赖并执行项目构建脚本。
       - name: Check out repository
         uses: actions/checkout@v4
 

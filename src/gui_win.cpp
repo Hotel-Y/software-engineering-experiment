@@ -13,6 +13,7 @@
 #pragma comment(lib, "shell32.lib")
 
 namespace {
+// 控件 ID 将 Win32 的 WM_COMMAND 消息映射到具体输入框和按钮。
 constexpr int idSource = 101;
 constexpr int idBackup = 102;
 constexpr int idArchive = 103;
@@ -42,12 +43,14 @@ HWND outputBox = nullptr;
 HWND statusLabel = nullptr;
 HFONT uiFont = nullptr;
 
+// 从指定编辑框读取 Unicode 文本，所有路径始终以宽字符在 GUI 内流转。
 std::wstring getText(HWND window, int id) {
     wchar_t buffer[1024]{};
     GetWindowTextW(GetDlgItem(window, id), buffer, 1024);
     return buffer;
 }
 
+// 输出区提供“替换”和“追加”两种写法，供单步骤与自动两步骤操作复用。
 void setOutput(const std::wstring& text) {
     SetWindowTextW(outputBox, text.c_str());
 }
@@ -58,7 +61,9 @@ void appendOutput(const std::wstring& text) {
     SendMessageW(outputBox, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(text.c_str()));
 }
 
+// 给命令输出补充阶段标题，并根据调用场景选择覆盖还是追加。
 void publishCommandOutput(const std::wstring& text, const std::wstring& heading, bool append) {
+    // 多步骤操作可追加第二阶段输出，单步骤操作则替换旧结果。
     auto message = heading.empty() ? text : heading + L"\r\n" + text;
     if (append) {
         appendOutput(L"\r\n\r\n" + message);
@@ -67,15 +72,18 @@ void publishCommandOutput(const std::wstring& text, const std::wstring& heading,
     }
 }
 
+// 按控件 ID 填写宽字符文本，是智能默认值写回界面的统一入口。
 void setText(HWND window, int id, const std::wstring& text) {
     SetWindowTextW(GetDlgItem(window, id), text.c_str());
 }
 
 std::wstring quote(const std::wstring& value) {
+    // 路径和密码统一加引号，避免空格被 CreateProcessW 拆成多个参数。
     return L"\"" + value + L"\"";
 }
 
 std::wstring executablePath() {
+    // GUI 与核心程序部署在同一目录，不依赖当前工作目录或系统 PATH。
     wchar_t path[MAX_PATH]{};
     GetModuleFileNameW(nullptr, path, MAX_PATH);
     std::wstring fullPath = path;
@@ -84,6 +92,7 @@ std::wstring executablePath() {
     return dir + L"\\sbm.exe";
 }
 
+// 读取下拉框当前选项；未选择时返回空字符串，调用方据此省略 CLI 参数。
 std::wstring getComboText(HWND window, int comboId) {
     const HWND combo = GetDlgItem(window, comboId);
     const int idx = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
@@ -93,6 +102,7 @@ std::wstring getComboText(HWND window, int comboId) {
     return buffer;
 }
 
+// 重置动态筛选下拉框并恢复首项“(none)”，表示不启用该过滤条件。
 void clearCombo(HWND window, int comboId) {
     const HWND combo = GetDlgItem(window, comboId);
     SendMessageW(combo, CB_RESETCONTENT, 0, 0);
@@ -100,6 +110,7 @@ void clearCombo(HWND window, int comboId) {
     SendMessageW(combo, CB_SETCURSEL, 0, 0);
 }
 
+// 向下拉框批量加入固定候选值，并默认选中第一项。
 void addComboStrings(HWND window, int comboId, const std::vector<const wchar_t*>& items) {
     const HWND combo = GetDlgItem(window, comboId);
     for (const auto* item : items) {
@@ -108,21 +119,25 @@ void addComboStrings(HWND window, int comboId, const std::vector<const wchar_t*>
     SendMessageW(combo, CB_SETCURSEL, 0, 0);
 }
 
+// 创建只能选择预设项的下拉框，避免日期等规则出现任意格式输入。
 void addCombo(HWND window, int id, int x, int y, int width) {
     CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
                   x, y, width, 200, window, reinterpret_cast<HMENU>(id), nullptr, nullptr);
 }
 
+// 路径输入框旁的“...”按钮只负责触发对应系统选择对话框。
 void addBrowseButton(HWND window, int id, int x, int y) {
     CreateWindowW(L"BUTTON", L"...", WS_CHILD | WS_VISIBLE,
                   x, y, 30, 24, window, reinterpret_cast<HMENU>(id), nullptr, nullptr);
 }
 
+// 递归扫描源目录，从真实文件中提取扩展名、文件主名和顶层目录作为筛选候选。
 void scanSourceAndPopulateFilters(HWND window, const std::wstring& sourcePath) {
     if (sourcePath.empty()) return;
     std::error_code ec;
     if (!std::filesystem::is_directory(sourcePath, ec)) return;
 
+    // set 同时完成去重和排序，使下拉选项稳定且易查找。
     std::set<std::wstring> exts, names, paths;
     for (const auto& item : std::filesystem::recursive_directory_iterator(
              sourcePath, std::filesystem::directory_options::skip_permission_denied, ec)) {
@@ -154,6 +169,7 @@ void scanSourceAndPopulateFilters(HWND window, const std::wstring& sourcePath) {
     }
 }
 
+// 打开 Windows 文件夹选择器；选择源目录后还会立即刷新自动筛选候选。
 void browseFolder(HWND window, int editId) {
     BROWSEINFOW bi{};
     bi.hwndOwner = window;
@@ -171,6 +187,7 @@ void browseFolder(HWND window, int editId) {
     }
 }
 
+// 打开 SBA 保存文件对话框，并把最终文件名写回 Archive 输入框。
 void browseFile(HWND window, int editId) {
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
@@ -186,7 +203,9 @@ void browseFile(HWND window, int editId) {
     }
 }
 
+// 根据一个输入路径填充备份、归档、还原目标，并联动扫描默认筛选项。
 void applySmartDefaults(HWND window) {
+    // 用户只输入一个路径，推断模块一次性生成其余路径和推荐操作。
     const auto defaults = sbm::gui::inferSmartDefaults(getText(window, idSource));
     if (!defaults.valid()) {
         SetWindowTextW(statusLabel, defaults.message.c_str());
@@ -201,7 +220,10 @@ void applySmartDefaults(HWND window) {
     scanSourceAndPopulateFilters(window, defaults.source.wstring());
 }
 
+// 无控制台启动 sbm.exe，捕获合并后的 stdout/stderr，并返回其退出码是否为 0。
 bool runCommand(const std::wstring& command, const std::wstring& heading = L"", bool append = false) {
+    // 通过匿名管道捕获子进程的标准输出和错误输出。CreateProcessW 不解释“>”或
+    // “2>&1”等 shell 重定向，因此必须在 STARTUPINFO 中显式提供句柄。
     SECURITY_ATTRIBUTES sa{};
     sa.nLength = sizeof(sa);
     sa.bInheritHandle = TRUE;
@@ -213,6 +235,7 @@ bool runCommand(const std::wstring& command, const std::wstring& heading = L"", 
         publishCommandOutput(L"Failed to create output pipe.", heading, append);
         return false;
     }
+    // 子进程不能继承父进程的读取端，否则管道可能无法正确产生 EOF。
     SetHandleInformation(readEnd, HANDLE_FLAG_INHERIT, 0);
 
     STARTUPINFOW startup{};
@@ -230,6 +253,7 @@ bool runCommand(const std::wstring& command, const std::wstring& heading = L"", 
     const BOOL launched = CreateProcessW(nullptr, mutableCommand.data(), nullptr, nullptr,
                                          TRUE, CREATE_NO_WINDOW, nullptr, nullptr,
                                          &startup, &process);
+    // 子进程已有写入端副本，父进程立即关闭自己的副本，子进程退出后 ReadFile 才会结束。
     CloseHandle(writeEnd);
 
     if (!launched) {
@@ -238,6 +262,7 @@ bool runCommand(const std::wstring& command, const std::wstring& heading = L"", 
         return false;
     }
 
+    // sbm 默认输出 UTF-8；若转换失败则回退到当前 Windows ANSI 代码页。
     std::string bytes;
     char buffer[4096];
     DWORD read = 0;
@@ -268,7 +293,9 @@ bool runCommand(const std::wstring& command, const std::wstring& heading = L"", 
     return exitCode == 0;
 }
 
+// 为依赖 manifest.sbm 的操作补齐前置备份，或给出不可执行原因。
 bool ensureBackupReady(const std::wstring& source, const std::wstring& backup, const std::wstring& action) {
+    // Pack、Restore 和 Verify 都依赖清单；源目录输入时自动先执行一次 Backup。
     const auto preparation = sbm::gui::prepareBackupForDependentAction(source, backup);
     if (preparation == sbm::gui::BackupPreparation::CreateFromSource) {
         if (!runCommand(L"backup " + quote(source) + L" " + quote(backup) + L" --overwrite",
@@ -283,9 +310,11 @@ bool ensureBackupReady(const std::wstring& source, const std::wstring& backup, c
     return true;
 }
 
+// 主窗口过程：创建控件、响应按钮命令，并在销毁时释放 GDI 资源。
 LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_CREATE: {
+        // 窗口创建阶段一次性构造路径输入、筛选下拉框、按钮和多行输出区。
         uiFont = CreateFontW(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                              OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                              DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
@@ -354,6 +383,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_COMMAND: {
+        // 智能填充按钮和源路径失焦都触发推断，其余消息按按钮 ID 分发。
         const int id = LOWORD(wParam);
         const auto source = getText(window, idSource);
         const auto backup = getText(window, idBackup);
@@ -361,6 +391,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         const auto restore = getText(window, idRestore);
         const auto password = getText(window, idPassword);
 
+        // 浏览按钮直接写回路径；Auto Fill 再根据输入生成其他默认路径和筛选项。
         if (id == idBrowseSource) { browseFolder(window, idSource); return 0; }
         if (id == idBrowseBackup) { browseFolder(window, idBackup); return 0; }
         if (id == idBrowseArchive) { browseFile(window, idArchive); return 0; }
@@ -371,11 +402,13 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         }
 
+        // GUI 只组合 CLI 参数，不重复实现文件处理逻辑。
         if (id == idBackupButton) {
             if (source.empty() || backup.empty()) {
                 setOutput(L"Enter a source path and use Auto Fill before starting Backup.");
                 return 0;
             }
+            // 只把用户实际选择的规则附加到命令行；“(none)”保持核心默认行为。
             std::wstring cmd = L"backup " + quote(source) + L" " + quote(backup) + L" --overwrite";
             const auto ext = getComboText(window, idExtCombo);
             const auto name = getComboText(window, idNameCombo);
@@ -433,7 +466,11 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return 0;
     }
     case WM_DESTROY:
-        if (uiFont != nullptr) { DeleteObject(uiFont); uiFont = nullptr; }
+        // 释放手工创建的 GDI 字体后退出消息循环。
+        if (uiFont != nullptr) {
+            DeleteObject(uiFont);
+            uiFont = nullptr;
+        }
         PostQuitMessage(0);
         return 0;
     default:
@@ -442,8 +479,10 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 }
 }
 
+// 程序入口：注册窗口类、创建主窗口，然后进入标准 Win32 消息循环。
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int showCommand) {
     const wchar_t className[] = L"SimpleBackupManagerGui";
+    // 初始化组合框等通用控件，再注册本项目自己的主窗口类。
     INITCOMMONCONTROLSEX icc{};
     icc.dwSize = sizeof(icc);
     icc.dwICC = ICC_WIN95_CLASSES;

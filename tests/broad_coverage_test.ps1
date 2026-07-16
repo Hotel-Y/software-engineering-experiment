@@ -1,7 +1,7 @@
-﻿# CLI 集成测试套件：每个编号用例都调用真实 sbm.exe，跨越进程、文件系统、清单、
-# 归档与还原边界验证结果，而不是直接调用 C++ 内部函数。
+﻿# 30 项广度测试套件；可运行全部用例，也可通过 -CaseId 单独复现一个编号用例。
 param(
-    [Parameter(Mandatory = $true)][string]$Executable
+    [Parameter(Mandatory = $true)][string]$Executable,
+    [string]$CaseId = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,7 +9,7 @@ if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction Sile
     $PSNativeCommandUseErrorActionPreference = $false
 }
 
-# 每次运行使用唯一临时目录，并集中保存通过数、失败详情及最近一次命令输出。
+# 脚本级状态集中记录通过数、总数、失败详情和最近一次 CLI 输出。
 $script:Executable = (Resolve-Path -LiteralPath $Executable).Path
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $suiteRoot = Join-Path ([IO.Path]::GetTempPath()) `
@@ -18,6 +18,7 @@ $script:Passed = 0
 $script:Total = 0
 $script:Failures = [System.Collections.Generic.List[string]]::new()
 $script:LastOutput = ""
+$script:RequestedCaseId = $CaseId.Trim().ToUpperInvariant()
 
 if (Test-Path -LiteralPath $suiteRoot) {
     Remove-Item -LiteralPath $suiteRoot -Recurse -Force
@@ -30,7 +31,7 @@ function Invoke-Sbm {
         [switch]$ExpectFailure
     )
 
-    # 统一捕获 stdout/stderr 与退出码；负向用例由 ExpectFailure 明确声明。
+    # 执行核心程序并统一解释退出码；ExpectFailure 将非零退出视作预期结果。
     $oldPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
@@ -67,7 +68,7 @@ function Assert-SameFile {
         [Parameter(Mandatory = $true)][string]$Expected,
         [Parameter(Mandatory = $true)][string]$Actual
     )
-    # 使用 SHA-256 对比完整内容，适用于文本、二进制和零字节文件。
+    # 文件往返结果用 SHA-256 比较，避免文本编码或换行处理影响判断。
     $expectedHash = (Get-FileHash -LiteralPath $Expected -Algorithm SHA256).Hash
     $actualHash = (Get-FileHash -LiteralPath $Actual -Algorithm SHA256).Hash
     Assert-True ($expectedHash -eq $actualHash) "File hashes differ: $Expected vs $Actual"
@@ -80,7 +81,12 @@ function Invoke-BroadCase {
         [Parameter(Mandatory = $true)][scriptblock]$Body
     )
 
-    # 每个用例在独立子目录执行；异常被记录后继续跑后续用例，最终一次性汇总。
+    # 指定 CaseId 时跳过其余用例；每个用例在独立目录运行并自行捕获失败。
+    if (![string]::IsNullOrWhiteSpace($script:RequestedCaseId) -and
+        $Id.ToUpperInvariant() -ne $script:RequestedCaseId) {
+        return
+    }
+
     ++$script:Total
     $caseRoot = Join-Path $suiteRoot $Id
     New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
@@ -479,6 +485,11 @@ Invoke-BroadCase "BC-30" "retain only the requested scheduled snapshots" {
     Assert-True (@(Get-ChildItem -LiteralPath $snapshots -Directory).Count -eq 2) "Snapshot retention count mismatch"
 }
 
+# 指定了不存在的编号时明确报错，避免“0/0 通过”造成误判。
+if ($script:Total -eq 0) {
+    throw "Unknown broad-coverage case id: $CaseId"
+}
+
 if ($script:Failures.Count -gt 0) {
     Write-Host ""
     Write-Host "Broad coverage failures:" -ForegroundColor Red
@@ -488,4 +499,4 @@ if ($script:Failures.Count -gt 0) {
 
 Remove-Item -LiteralPath $suiteRoot -Recurse -Force
 Write-Host "Broad coverage tests passed: $($script:Passed)/$($script:Total)."
-exit 0
+return

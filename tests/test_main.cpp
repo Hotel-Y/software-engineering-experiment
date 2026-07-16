@@ -1,5 +1,4 @@
-// Simple Backup Manager - Unit Tests
-// Uses Catch2 v3. Each test case is fully self-contained.
+// Simple Backup Manager 的 Catch2 v3 单元测试；每个 TEST_CASE 都创建独立临时环境。
 
 #include <catch2/catch_all.hpp>
 #include "FileUtils.h"
@@ -15,12 +14,13 @@
 #include <vector>
 
 // ============================================================================
-// Helpers
+// 测试辅助工具
 // ============================================================================
 
 namespace {
     const auto projectRoot = std::filesystem::absolute(".");
 
+    // RAII 临时目录：构造时创建，测试结束或异常退出时自动递归清理。
     struct TempDir {
         std::filesystem::path path;
         TempDir() : path(projectRoot / "build" / "tmp_test" /
@@ -28,6 +28,7 @@ namespace {
             std::filesystem::create_directories(path);
         }
         ~TempDir() { std::error_code ec; std::filesystem::remove_all(path, ec); }
+        // 按相对路径创建父目录并写入二进制内容。
         void write(const std::string& rp, const std::string& c) const {
             auto f = path / rp;
             std::filesystem::create_directories(f.parent_path());
@@ -38,6 +39,7 @@ namespace {
         }
     };
 
+    // 流式读取测试文件，避免文本模式换行转换影响内容断言。
     std::string readFile(const std::filesystem::path& p) {
         std::ifstream in(p, std::ios::binary);
         if (!in) return {};
@@ -47,7 +49,7 @@ namespace {
         return r;
     }
 
-    // Helper: create BackupOptions with overwrite by default
+    // 单元测试默认允许覆盖，避免重复准备同一路径时被前置策略干扰。
     BackupOptions overwriteOpts() {
         BackupOptions o;
         o.overwrite = true;
@@ -60,7 +62,7 @@ namespace {
 }
 
 // ============================================================================
-// FileUtils
+// FileUtils：扩展名、校验值、时间、UTF-8 路径和根目录约束
 // ============================================================================
 
 TEST_CASE("normalizeExtension", "[fileutils]") {
@@ -118,7 +120,7 @@ TEST_CASE("resolvePathInside", "[fileutils]") {
 }
 
 // ============================================================================
-// Manifest
+// Manifest：内存条目、保存/读取往返和损坏格式拒绝
 // ============================================================================
 
 TEST_CASE("Manifest add and retrieve", "[manifest]") {
@@ -177,7 +179,7 @@ TEST_CASE("Manifest rejects duplicates", "[manifest]") {
 }
 
 // ============================================================================
-// BackupManager
+// BackupManager：备份筛选、覆盖策略、还原与异常场景
 // ============================================================================
 
 TEST_CASE("Backup basic files and verify", "[backup]") {
@@ -326,7 +328,7 @@ TEST_CASE("Backup special chars in names", "[edge]") {
 }
 
 // ============================================================================
-// ArchiveManager
+// ArchiveManager：普通/加密归档、解包、还原与非法输出位置
 // ============================================================================
 
 TEST_CASE("Archive pack and unpack basic", "[archive]") {
@@ -398,7 +400,7 @@ TEST_CASE("Archive rejects inside backup dir", "[archive]") {
 }
 
 // ============================================================================
-// Integration
+// 跨模块集成：Backup -> Pack -> Unpack -> Verify -> Restore 完整数据流
 // ============================================================================
 
 TEST_CASE("Full workflow backup-pack-unpack-verify-restore", "[integration]") {

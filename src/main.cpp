@@ -21,8 +21,11 @@
 #endif
 
 namespace {
+// 同时保存“文本参数”和“路径参数”：选项用 UTF-8 解析，路径保留 Windows 宽字符。
+// 这样即使终端代码页不是 UTF-8，中文路径也不会在进入 filesystem 前损坏。
 class CommandLineArguments {
 public:
+    // Windows 下重新读取宽字符命令行；其他平台直接把 argv 当作 UTF-8。
     CommandLineArguments(int argc, char* argv[]) {
 #ifdef _WIN32
         (void)argv;
@@ -75,6 +78,7 @@ public:
         }
     }
 
+    // 三个只读访问器保证文本数组与路径数组始终使用相同下标。
     std::size_t size() const {
         return text_.size();
     }
@@ -92,6 +96,7 @@ private:
     std::vector<std::filesystem::path> paths_;
 };
 
+// 输出六类命令及可选参数，是参数不足或命令未知时的统一帮助信息。
 void printUsage() {
     std::cout
         << "Simple Backup Manager\n"
@@ -107,6 +112,7 @@ void printUsage() {
         << "  sbm unpack <archive_file> <output_dir> [--password=secret]\n";
 }
 
+// 将 --ext=.txt,.cpp 一类逗号分隔参数拆成独立过滤值。
 std::vector<std::string> splitCsv(const std::string& value) {
     std::vector<std::string> result;
     std::stringstream stream(value);
@@ -119,6 +125,7 @@ std::vector<std::string> splitCsv(const std::string& value) {
     return result;
 }
 
+// 严格读取非负整数：除了范围外，还拒绝负号、空字符串和尾随字符。
 std::uint64_t parseUnsigned(const std::string& value, const std::string& optionName) {
     if (value.empty() || value.front() == '-') {
         throw std::runtime_error(optionName + " must be a non-negative integer.");
@@ -136,6 +143,7 @@ std::uint64_t parseUnsigned(const std::string& value, const std::string& optionN
     return result;
 }
 
+// 在无符号解析的基础上限制到 int 范围，供次数和间隔参数使用。
 int parseNonNegativeInt(const std::string& value, const std::string& optionName) {
     const auto parsed = parseUnsigned(value, optionName);
     if (parsed > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
@@ -144,6 +152,7 @@ int parseNonNegativeInt(const std::string& value, const std::string& optionName)
     return static_cast<int>(parsed);
 }
 
+// 将 YYYY-MM-DD 转成当天 00:00:00 的 Unix 秒，并校验真实日历日期。
 std::int64_t parseDateStart(const std::string& value) {
     std::tm tm{};
     std::istringstream stream(value);
@@ -167,10 +176,12 @@ std::int64_t parseDateStart(const std::string& value) {
     return static_cast<std::int64_t>(result);
 }
 
+// “截止日期”覆盖当天最后一秒，使用户输入更符合直觉。
 std::int64_t parseDateEnd(const std::string& value) {
     return parseDateStart(value) + 24 * 60 * 60 - 1;
 }
 
+// 备份类操作和归档类操作的统计字段不同，分别使用两个格式化函数。
 void printStats(const std::string& action, const OperationStats& stats) {
     std::cout << action << " summary:\n"
               << "  directories: " << stats.directories << '\n'
@@ -180,6 +191,7 @@ void printStats(const std::string& action, const OperationStats& stats) {
               << "  bytes: " << stats.bytes << '\n';
 }
 
+// 归档统计额外显示存储字节数，以便观察压缩后的实际体积。
 void printArchiveStats(const std::string& action, const ArchiveStats& stats) {
     std::cout << action << " summary:\n"
               << "  files: " << stats.files << '\n'
@@ -187,6 +199,7 @@ void printArchiveStats(const std::string& action, const ArchiveStats& stats) {
               << "  stored bytes: " << stats.storedBytes << '\n';
 }
 
+// 所有备份过滤参数的唯一解析入口；未知选项立即报错，避免静默忽略拼写错误。
 BackupOptions parseOptions(const CommandLineArguments& arguments, std::size_t firstOptionIndex) {
     BackupOptions options;
     for (std::size_t i = firstOptionIndex; i < arguments.size(); ++i) {
@@ -218,6 +231,7 @@ BackupOptions parseOptions(const CommandLineArguments& arguments, std::size_t fi
     return options;
 }
 
+// 解析 Pack/Unpack 共用的归档选项，目前仅支持非空密码。
 ArchiveOptions parseArchiveOptions(const CommandLineArguments& arguments,
                                    std::size_t firstOptionIndex) {
     ArchiveOptions options;
@@ -235,6 +249,7 @@ ArchiveOptions parseArchiveOptions(const CommandLineArguments& arguments,
     return options;
 }
 
+// 生成既可读又可按字典序排序的快照目录名，同一秒内用三位序号消除重名。
 std::string snapshotName(int index) {
     const auto now = std::chrono::system_clock::now();
     const auto time = std::chrono::system_clock::to_time_t(now);
@@ -250,6 +265,7 @@ std::string snapshotName(int index) {
     return stream.str();
 }
 
+// --keep 未提供时返回 -1，表示不执行快照清理；0 则表示全部清理。
 int parseKeepCount(const CommandLineArguments& arguments, std::size_t firstOptionIndex) {
     for (std::size_t i = firstOptionIndex; i < arguments.size(); ++i) {
         const std::string& arg = arguments.text(i);
@@ -260,6 +276,7 @@ int parseKeepCount(const CommandLineArguments& arguments, std::size_t firstOptio
     return -1;
 }
 
+// 快照名按 YYYYMMDD_HHMMSS_序号 排序，字典序即时间顺序，可直接删除最旧项。
 void pruneSnapshots(const std::filesystem::path& snapshotRoot, int keepCount) {
     if (keepCount < 0) {
         return;
@@ -289,6 +306,7 @@ void pruneSnapshots(const std::filesystem::path& snapshotRoot, int keepCount) {
 
 int main(int argc, char* argv[]) {
     try {
+        // CLI 入口只负责参数校验与命令分发；实际文件操作全部交给两个 Manager。
         const CommandLineArguments arguments(argc, argv);
         if (arguments.size() < 2) {
             printUsage();
@@ -332,12 +350,14 @@ int main(int argc, char* argv[]) {
                 throw std::runtime_error("Schedule count must be > 0.");
             }
 
+            // 每次快照目录名都不同，但仍允许覆盖同名秒级快照，保证定时任务可重试。
             auto options = parseOptions(arguments, 6);
             options.overwrite = true;
             BackupManager manager(options);
             OperationStats total;
             std::filesystem::create_directories(arguments.path(3));
 
+            // 当前实现为进程内定时循环：备份、执行保留策略、等待，再进入下一轮。
             for (int i = 1; i <= count; ++i) {
                 const auto snapshotDir = arguments.path(3) / snapshotName(i);
                 const auto stats = manager.backup(arguments.path(2), snapshotDir);
@@ -368,6 +388,7 @@ int main(int argc, char* argv[]) {
             const bool ok = stats.failedFiles == 0;
             std::cout << (ok ? "Backup is valid.\n" : "Backup is broken.\n");
             printStats("Verify", stats);
+            // 0 表示清单完全匹配，2 专门表示发现损坏，便于脚本区别于普通参数错误。
             return ok ? 0 : 2;
         }
 

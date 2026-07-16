@@ -1,3 +1,4 @@
+﻿# GUI 人工验收辅助脚本：启动原生窗口并把一套示例路径、密码填入对应控件。
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $exe = Join-Path $root "bin\sbm_gui.exe"
@@ -8,6 +9,7 @@ $backup  = Join-Path $run "backup"
 $archive = Join-Path $run "secure.sba"
 $restore = Join-Path $run "restore"
 
+# 使用极少量 Win32 互操作查找窗口并向编辑框发送 Unicode 文本。
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -28,7 +30,7 @@ public static class Win {
 }
 "@
 
-# kill any old instance first
+# 先结束旧实例，确保后续找到的是本次新启动、输入为空的窗口。
 Get-Process -Name sbm_gui -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 200
 
@@ -36,8 +38,8 @@ Start-Process -FilePath $exe
 $main = [Win]::FindMainWindow("SimpleBackupManagerGui")
 if ($main -eq [IntPtr]::Zero) { throw "GUI window not found." }
 
-# control IDs from gui_win.cpp: Source=101 Backup=102 Archive=103 Restore=104 Password=105
-# GetDlgItem via SendMessage? use user32 GetDlgItem
+# 控件 ID 与 gui_win.cpp 一致：源=101、备份=102、归档=103、还原=104、密码=105。
+# GetDlgItem 根据父窗口和 ID 取得具体输入框句柄。
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -51,6 +53,7 @@ $BM_SETCHECK = 0x00A1
 $BST_CHECKED = [IntPtr]1
 
 function SetText($id, $text) {
+  # WM_SETTEXT 直接填写控件，不模拟键盘，因此中文路径也能稳定输入。
   $h = [Dlg]::GetDlgItem($main, $id)
   if ($h -eq [IntPtr]::Zero) { Write-Host "control $id not found"; return }
   [Win]::SendMessageW($h, $WM_SETTEXT, [IntPtr]::Zero, $text) | Out-Null
@@ -62,7 +65,7 @@ SetText 103 $archive
 SetText 104 $restore
 SetText 105 "secret123"
 
-# Compression (LZ77 + Huffman) is always on, so there is no checkbox to tick.
+# LZ77 + Huffman 压缩始终启用，所以界面没有需要勾选的压缩复选框。
 
 [Win]::SetForegroundWindow($main) | Out-Null
 

@@ -1,6 +1,8 @@
+﻿# 对已打开并填好的 GUI 依次发送按钮点击消息，读取输出框用于快速界面验收。
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+# SendMessageTimeoutW 带超时保护，避免业务执行卡住时测试脚本永久等待。
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -12,7 +14,7 @@ public static class Gui {
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessageTimeoutW(IntPtr h, uint msg, IntPtr w, StringBuilder l, uint flags, uint timeout, out IntPtr result);
   public static IntPtr FindMainWindow(string cls) {
     for (int i = 0; i < 60; i++) {
-      IntPtr h = FindWindowExW(IntPtr.Zero, IntPtr.Zero, cls, null); // C# null => real NULL pointer
+      IntPtr h = FindWindowExW(IntPtr.Zero, IntPtr.Zero, cls, null); // C# null 会传递真正的空指针。
       if (h != IntPtr.Zero) return h;
       System.Threading.Thread.Sleep(100);
     }
@@ -20,31 +22,31 @@ public static class Gui {
   }
   public static string ReadText(IntPtr h) {
     IntPtr len;
-    SendMessageTimeoutW(h, 0x000E, IntPtr.Zero, IntPtr.Zero, 0x0002, 2000, out len); // WM_GETTEXTLENGTH
+    SendMessageTimeoutW(h, 0x000E, IntPtr.Zero, IntPtr.Zero, 0x0002, 2000, out len); // 读取文本长度。
     int n = (int)len;
     if (n <= 0) return "";
     StringBuilder sb = new StringBuilder(n + 1);
     IntPtr r;
-    SendMessageTimeoutW(h, 0x000D, (IntPtr)(n + 1), sb, 0x0002, 5000, out r); // WM_GETTEXT
+    SendMessageTimeoutW(h, 0x000D, (IntPtr)(n + 1), sb, 0x0002, 5000, out r); // 读取完整文本。
     return sb.ToString();
   }
   public static bool Click(IntPtr h) {
     IntPtr r;
-    SendMessageTimeoutW(h, 0x00F5, IntPtr.Zero, IntPtr.Zero, 0x0002 | 0x0001, 30000, out r); // BM_CLICK, SMTO_ABORTIFHUNG|SMTO_BLOCK
+    SendMessageTimeoutW(h, 0x00F5, IntPtr.Zero, IntPtr.Zero, 0x0002 | 0x0001, 30000, out r); // 点击并在窗口无响应时中止。
     return true;
   }
 }
 "@
 
-# Find the GUI main window (class SimpleBackupManagerGui).
-# Must call FindWindowExW with a NULL title pointer (C# null), not PowerShell
-# $null which marshals to "" and would fail to match the real window title.
+# 按窗口类名查找主窗口。标题参数必须由 C# 传真正的 NULL；PowerShell 的 $null
+# 可能封送为空字符串，从而无法匹配实际窗口标题。
 $main = [Gui]::FindMainWindow("SimpleBackupManagerGui")
 if ($main -eq [IntPtr]::Zero) { throw "GUI window not found. Run fill_gui.ps1 first." }
 
-$out = [Gui]::GetDlgItem($main, 106)   # output box
+$out = [Gui]::GetDlgItem($main, 106)   # 106 是多行输出框。
 
 function Click-Button($id, $label) {
+  # 点击指定按钮，稍等界面刷新，再把当前输出框内容打印到终端。
   $btn = [Gui]::GetDlgItem($main, $id)
   if ($btn -eq [IntPtr]::Zero) { Write-Host "  [$label] button not found"; return }
   Write-Host ""

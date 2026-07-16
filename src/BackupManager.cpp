@@ -9,6 +9,7 @@
 namespace {
 constexpr const char* manifestName = "manifest.sbm";
 
+// create_directories 本身可重复调用；统一包装后可提供一致、可读的异常信息。
 void ensureDirectory(const std::filesystem::path& path) {
     std::error_code ec;
     std::filesystem::create_directories(path, ec);
@@ -17,6 +18,7 @@ void ensureDirectory(const std::filesystem::path& path) {
     }
 }
 
+// 清单文件名固定，由一个辅助函数避免三类操作各自拼接产生不一致。
 std::filesystem::path manifestPath(const std::filesystem::path& backupDir) {
     return backupDir / manifestName;
 }
@@ -24,13 +26,16 @@ std::filesystem::path manifestPath(const std::filesystem::path& backupDir) {
 }
 
 BackupManager::BackupManager(BackupOptions options) : options_(std::move(options)) {
+    // 扩展名在构造阶段只规范化一次，遍历大量文件时无需反复处理过滤条件。
     for (auto& extension : options_.includeExtensions) {
         extension = normalizeExtension(extension);
     }
 }
 
+// 创建镜像式备份并同步生成清单；任何前置条件不满足都在写文件前失败。
 OperationStats BackupManager::backup(const std::filesystem::path& sourceDir,
                                       const std::filesystem::path& backupDir) const {
+    // 禁止把备份写回源目录内部，否则递归遍历会不断把备份再次备份。
     if (!std::filesystem::exists(sourceDir) || !std::filesystem::is_directory(sourceDir)) {
         throw std::runtime_error("Source directory does not exist: " + pathToUtf8(sourceDir));
     }
@@ -52,6 +57,7 @@ OperationStats BackupManager::backup(const std::filesystem::path& sourceDir,
     Manifest manifest;
     OperationStats stats;
 
+    // 文件复制与清单生成在同一次遍历中完成，清单只记录实际纳入备份的文件。
     const auto root = std::filesystem::absolute(sourceDir);
     for (const auto& item : std::filesystem::recursive_directory_iterator(
              root, std::filesystem::directory_options::skip_permission_denied)) {
@@ -65,6 +71,7 @@ OperationStats BackupManager::backup(const std::filesystem::path& sourceDir,
             continue;
         }
 
+        // 符号链接、设备等特殊项目不进入普通文件备份。
         if (!item.is_regular_file()) {
             ++stats.skippedFiles;
             continue;
@@ -92,8 +99,10 @@ OperationStats BackupManager::backup(const std::filesystem::path& sourceDir,
     return stats;
 }
 
+// 以清单为准恢复目录结构、文件内容和修改时间。
 OperationStats BackupManager::restore(const std::filesystem::path& backupDir,
                                        const std::filesystem::path& restoreDir) const {
+    // 清单是还原的唯一依据；resolvePathInside 同时防止恶意相对路径越界写入。
     const auto manifest = Manifest::load(manifestPath(backupDir));
     ensureDirectory(restoreDir);
     OperationStats stats;
@@ -115,6 +124,7 @@ OperationStats BackupManager::restore(const std::filesystem::path& backupDir,
         std::filesystem::copy_file(sourcePath, targetPath,
                                    std::filesystem::copy_options::overwrite_existing);
 
+        // 复制后立即校验目标文件，避免“复制调用成功但数据已损坏”被误报为成功。
         const auto checksum = fnv1aFileChecksum(targetPath);
         if (checksum != entry.checksum) {
             throw std::runtime_error("Restored file checksum mismatch: " + pathToUtf8(targetPath));
@@ -126,7 +136,9 @@ OperationStats BackupManager::restore(const std::filesystem::path& backupDir,
     return stats;
 }
 
+// 扫描清单声明的全部项目并累计失败数，不因第一个缺失文件就停止。
 OperationStats BackupManager::verify(const std::filesystem::path& backupDir) const {
+    // 校验过程只读：目录看存在性，文件同时比较大小和内容校验值。
     const auto manifest = Manifest::load(manifestPath(backupDir));
     OperationStats stats;
 
@@ -163,6 +175,7 @@ OperationStats BackupManager::verify(const std::filesystem::path& backupDir) con
     return stats;
 }
 
+// 所有启用的筛选器采用 AND 关系；未配置扩展名时允许任意扩展名。
 bool BackupManager::shouldIncludeFile(const std::filesystem::path& filePath,
                                       const std::filesystem::path& relativePath,
                                       std::uintmax_t fileSize) const {

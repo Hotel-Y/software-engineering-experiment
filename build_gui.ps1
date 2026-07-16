@@ -11,7 +11,7 @@ g++ -std=c++17 -Wall -Wextra -pedantic -O2 -mwindows `
     -I (Join-Path $root "include") `
     (Join-Path $root "src\gui_win.cpp") `
     -o (Join-Path $bin "sbm_gui.exe") `
-    -luser32 -lgdi32
+    -luser32 -lgdi32 -lcomctl32 -lole32
 if ($LASTEXITCODE -ne 0) {
     throw "GUI build failed."
 }
